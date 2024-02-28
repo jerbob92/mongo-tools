@@ -13,6 +13,7 @@ import (
 
 	"github.com/mongodb/mongo-tools/common/archive"
 	"github.com/mongodb/mongo-tools/common/auth"
+	"github.com/mongodb/mongo-tools/common/bsonutil"
 	"github.com/mongodb/mongo-tools/common/db"
 	"github.com/mongodb/mongo-tools/common/failpoint"
 	"github.com/mongodb/mongo-tools/common/intents"
@@ -20,6 +21,7 @@ import (
 	"github.com/mongodb/mongo-tools/common/options"
 	"github.com/mongodb/mongo-tools/common/progress"
 	"github.com/mongodb/mongo-tools/common/util"
+	"github.com/pkg/errors"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -66,6 +68,7 @@ type MongoDump struct {
 	oplogStart      primitive.Timestamp
 	oplogEnd        primitive.Timestamp
 	isMongos        bool
+	isAtlasProxy    bool
 	storageEngine   storageEngineType
 	authVersion     int
 	archive         *archive.Writer
@@ -129,6 +132,8 @@ func (dump *MongoDump) ValidateOptions() error {
 		return fmt.Errorf("compression can't be used when dumping a single collection to standard output")
 	case dump.OutputOptions.NumParallelCollections <= 0:
 		return fmt.Errorf("numParallelCollections must be positive")
+	case dump.isAtlasProxy && (dump.OutputOptions.DumpDBUsersAndRoles || dump.ToolOptions.DB == "admin"):
+		return fmt.Errorf("can't dump from admin database when connecting to a MongoDB Atlas free or shared cluster")
 	}
 	return nil
 }
@@ -140,14 +145,6 @@ func (dump *MongoDump) Init() error {
 	// this would be default, but explicit setting protects us from any
 	// redefinition of the constants.
 	dump.storageEngine = storageEngineUnknown
-
-	err := dump.ValidateOptions()
-	if err != nil {
-		return fmt.Errorf("bad option: %v", err)
-	}
-	if dump.OutputWriter == nil {
-		dump.OutputWriter = os.Stdout
-	}
 
 	pref, err := db.NewReadPreference(dump.InputOptions.ReadPreference, dump.ToolOptions.URI.ParsedConnString())
 	if err != nil {
@@ -163,6 +160,19 @@ func (dump *MongoDump) Init() error {
 	dump.isMongos, err = dump.SessionProvider.IsMongos()
 	if err != nil {
 		return fmt.Errorf("error checking for Mongos: %v", err)
+	}
+
+	dump.isAtlasProxy = dump.SessionProvider.IsAtlasProxy()
+	if dump.isAtlasProxy {
+		log.Logv(log.DebugLow, "dumping from a MongoDB Atlas free or shared cluster")
+	}
+
+	err = dump.ValidateOptions()
+	if err != nil {
+		return fmt.Errorf("bad option: %v", err)
+	}
+	if dump.OutputWriter == nil {
+		dump.OutputWriter = os.Stdout
 	}
 
 	if dump.isMongos && dump.OutputOptions.Oplog {
@@ -226,6 +236,8 @@ func (dump *MongoDump) Dump() (err error) {
 		dump.query = query
 	}
 
+	// If we enter this case, then we're not connected to an atlas proxy otherwise
+	// mongodump would have errored earlier.
 	if !dump.SkipUsersAndRoles && dump.OutputOptions.DumpDBUsersAndRoles {
 		// first make sure this is possible with the connected database
 		dump.authVersion, err = auth.GetAuthVersion(dump.SessionProvider)
@@ -284,6 +296,27 @@ func (dump *MongoDump) Dump() (err error) {
 		return fmt.Errorf("error connecting to host: %v", err)
 	}
 
+	// If oplog capturing is enabled, we first check the most recent
+	// oplog entry and save its timestamp, this will let us later
+	// copy all oplog entries that occurred while dumping, creating
+	// what is effectively a point-in-time snapshot.
+	if dump.OutputOptions.Oplog {
+		err := dump.determineOplogCollectionName()
+		if err != nil {
+			return fmt.Errorf("error finding oplog: %v", err)
+		}
+		log.Logvf(log.Info, "getting most recent oplog timestamp")
+		dump.oplogStart, err = dump.getOplogCopyStartTime()
+		if err != nil {
+			return fmt.Errorf("error getting oplog start: %v", err)
+		}
+	}
+
+	if failpoint.Enabled(failpoint.PauseBeforeDumping) {
+		log.Logvf(log.Info, "failpoint.PauseBeforeDumping: sleeping 15 sec")
+		time.Sleep(15 * time.Second)
+	}
+
 	// switch on what kind of execution to do
 	switch {
 	case dump.ToolOptions.DB == "" && dump.ToolOptions.Collection == "":
@@ -304,6 +337,8 @@ func (dump *MongoDump) Dump() (err error) {
 		}
 	}
 
+	// If we enter this case, then we're not connected to an atlas proxy otherwise
+	// mongodump would have errored earlier.
 	if !dump.SkipUsersAndRoles && dump.OutputOptions.DumpDBUsersAndRoles && dump.ToolOptions.DB != "admin" {
 		err = dump.CreateUsersRolesVersionIntentsForDB(dump.ToolOptions.DB)
 		if err != nil {
@@ -338,7 +373,9 @@ func (dump *MongoDump) Dump() (err error) {
 		}
 	}
 
-	if !dump.SkipUsersAndRoles {
+	// Dump users and roles only if these settings are not configured to be skipped,
+	// and mongodump isn't connected to an atlas proxy.
+	if !dump.SkipUsersAndRoles && !dump.isAtlasProxy {
 		if dump.ToolOptions.DB == "admin" || dump.ToolOptions.DB == "" {
 			err = dump.DumpUsersAndRoles()
 			if err != nil {
@@ -356,27 +393,6 @@ func (dump *MongoDump) Dump() (err error) {
 				}
 			}
 		}
-	}
-
-	// If oplog capturing is enabled, we first check the most recent
-	// oplog entry and save its timestamp, this will let us later
-	// copy all oplog entries that occurred while dumping, creating
-	// what is effectively a point-in-time snapshot.
-	if dump.OutputOptions.Oplog {
-		err := dump.determineOplogCollectionName()
-		if err != nil {
-			return fmt.Errorf("error finding oplog: %v", err)
-		}
-		log.Logvf(log.Info, "getting most recent oplog timestamp")
-		dump.oplogStart, err = dump.getOplogCopyStartTime()
-		if err != nil {
-			return fmt.Errorf("error getting oplog start: %v", err)
-		}
-	}
-
-	if failpoint.Enabled(failpoint.PauseBeforeDumping) {
-		log.Logvf(log.Info, "failpoint.PauseBeforeDumping: sleeping 15 sec")
-		time.Sleep(15 * time.Second)
 	}
 
 	// IO Phase II
@@ -571,9 +587,13 @@ func (dump *MongoDump) DumpIntent(intent *intents.Intent, buffer resettableOutpu
 	switch {
 	case len(dump.query) > 0:
 		if intent.IsTimeseries() {
-			metaKey, ok := intent.Options["timeseries"].(bson.M)["metaField"].(string)
-			if !ok {
-				return fmt.Errorf("could not determine the metaField for %s", intent.Namespace())
+			timeseriesOptions, err := bsonutil.FindSubdocumentByKey("timeseries", &intent.Options)
+			if err != nil {
+				return errors.Wrapf(err, "could not find timeseries options for %s", intent.Namespace())
+			}
+			metaKey, err := bsonutil.FindStringValueByKey("metaField", &timeseriesOptions)
+			if err != nil {
+				return errors.Wrapf(err, "could not determine the metaField for %s", intent.Namespace())
 			}
 			for i, predicate := range dump.query {
 				splitPredicateKey := strings.SplitN(predicate.Key, ".", 2)
@@ -594,8 +614,8 @@ func (dump *MongoDump) DumpIntent(intent *intents.Intent, buffer resettableOutpu
 	// special collection, the oplog, and the user is not asking to force table scans.
 	case dump.storageEngine == storageEngineMMAPV1 && !dump.InputOptions.TableScan &&
 		!isView && !intent.IsSpecialCollection() && !intent.IsOplog():
-		autoIndexId, found := intent.Options["autoIndexId"]
-		if !found || autoIndexId == true {
+		autoIndexId, err := bsonutil.FindValueByKey("autoIndexId", &intent.Options)
+		if err != nil || autoIndexId == true {
 			findQuery.Hint = bson.D{{"_id", 1}}
 		}
 	}

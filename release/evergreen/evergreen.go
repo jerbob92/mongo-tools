@@ -100,6 +100,47 @@ func GetArtifactsForTask(id string) ([]Artifact, error) {
 	return task.Artifacts, nil
 }
 
+// GetPackageTaskForVersion gets the package tasks associated with a particular variant and version.
+// This is used to get the package task from the mongo-release project, which is then used to
+// download the jstestshell.
+func GetPackageTaskForVersion(variant, version string) (string, error) {
+	res, err := get("/versions/" + version)
+	if err != nil {
+		return "", err
+	}
+
+	var evgVersion EvgVersion
+	bodyDecoder := json.NewDecoder(res.Body)
+	err = bodyDecoder.Decode(&evgVersion)
+	if err != nil {
+		return "", err
+	}
+
+	buildID := ""
+
+	fmt.Printf("all builds: %s\n", evgVersion.BuildVariantStatus)
+
+	for _, buildDetail := range evgVersion.BuildVariantStatus {
+		if buildDetail.BuildVariant == variant {
+			buildID = buildDetail.BuildID
+			break
+		}
+	}
+
+	tasks, err := GetTasksForBuild(buildID)
+	if err != nil {
+		return "", err
+	}
+
+	for _, t := range tasks {
+		if t.DisplayName == "package" {
+			return t.TaskID, nil
+		}
+	}
+
+	return "", nil
+}
+
 // GetTasksForVersion gets all the evergreen tasks associated with a version.
 func GetTasksForVersion(version string) ([]Task, error) {
 	res, err := get("/versions/" + version)

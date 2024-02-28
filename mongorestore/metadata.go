@@ -331,14 +331,14 @@ func createCollectionCommand(intent *intents.Intent, options bson.D) bson.D {
 // This command must also be run on the primary.
 //
 // Example command:
-// {
-//    _mergeAuthzCollections: 1,
-//    db: "foo",
-//    tempUsersCollection: "myTempUsers"
-//    drop: true
-//    writeConcern: {w: "majority"}
-// }
 //
+//	{
+//	   _mergeAuthzCollections: 1,
+//	   db: "foo",
+//	   tempUsersCollection: "myTempUsers"
+//	   drop: true
+//	   writeConcern: {w: "majority"}
+//	}
 func (restore *MongoRestore) RestoreUsersOrRoles(users, roles *intents.Intent) error {
 
 	type loopArg struct {
@@ -589,13 +589,16 @@ func (restore *MongoRestore) ShouldRestoreUsersAndRoles() bool {
 	if restore.SkipUsersAndRoles {
 		return false
 	}
+
 	// If the user has done anything that would indicate the restoration
 	// of users and roles (i.e. used --restoreDbUsersAndRoles, -d admin, or
-	// is doing a full restore), then we check if users or roles BSON files
-	// actually exist in the dump dir. If they do, return true.
-	if restore.InputOptions.RestoreDBUsersAndRoles ||
+	// is doing a full restore), and the tool isn't connected to an atlas proxy
+	// then we check if users or roles BSON files actually exist in the dump
+	// dir. If they do, return true.
+	if (restore.InputOptions.RestoreDBUsersAndRoles ||
 		restore.ToolOptions.Namespace.DB == "" ||
-		restore.ToolOptions.Namespace.DB == "admin" {
+		restore.ToolOptions.Namespace.DB == "admin") &&
+		!restore.isAtlasProxy {
 		if restore.manager.Users() != nil || restore.manager.Roles() != nil {
 			return true
 		}

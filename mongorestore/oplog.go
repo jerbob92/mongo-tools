@@ -13,6 +13,7 @@ import (
 
 	"github.com/mongodb/mongo-tools/common/bsonutil"
 	"github.com/mongodb/mongo-tools/common/db"
+	"github.com/mongodb/mongo-tools/common/dumprestore"
 	"github.com/mongodb/mongo-tools/common/idx"
 	"github.com/mongodb/mongo-tools/common/intents"
 	"github.com/mongodb/mongo-tools/common/log"
@@ -22,6 +23,8 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
+
+	"golang.org/x/exp/slices"
 )
 
 // oplogMaxCommandSize sets the maximum size for multiple buffered ops in the
@@ -61,17 +64,14 @@ var errorTimestampBeforeLimit = fmt.Errorf("timestamp before limit")
 
 // shouldIgnoreNamespace returns true if the given namespace should be ignored during applyOps.
 func shouldIgnoreNamespace(ns string) bool {
-	if strings.HasPrefix(ns, "config.cache.") ||
-		ns == "config.transactions" ||
-		ns == "config.transaction_coordinators" ||
-		ns == "config.image_collection" ||
-		ns == "config.mongos" ||
-		ns == "config.system.sessions" ||
-		ns == "config.system.indexBuilds" ||
-		ns == "config.system.preimages" {
-		log.Logv(log.Always, "skipping applying the "+ns+" namespace in applyOps")
-		return true
+	if strings.HasPrefix(ns, "config.") {
+		collName := ns[7:]
+		if !slices.Contains(dumprestore.ConfigCollectionsToKeep, collName) {
+			log.Logv(log.Always, "skipping applying the "+ns+" namespace in applyOps")
+			return true
+		}
 	}
+
 	return false
 }
 
@@ -208,6 +208,14 @@ func (restore *MongoRestore) HandleNonTxnOp(oplogCtx *oplogContext, op db.Oplog)
 	op, err := restore.filterUUIDs(op)
 	if err != nil {
 		return fmt.Errorf("error filtering UUIDs from oplog: %v", err)
+	}
+
+	// The h field was removed in 7.1.0-rc0 as part of SERVER-69062
+	if restore.serverVersion.GTE(db.Version{7, 0, 0}) {
+		op, err = restore.filterHs(op)
+		if err != nil {
+			return fmt.Errorf("error filtering h from oplog entries: %v", err)
+		}
 	}
 
 	if op.Operation == "c" {
@@ -486,6 +494,37 @@ func (restore *MongoRestore) filterUUIDs(op db.Oplog) (db.Oplog, error) {
 			return db.Oplog{}, err
 		}
 		op.Object = filtered
+	}
+
+	return op, nil
+}
+
+// filterHs removes 'h' entries from ops, including nested applyOps ops.
+func (restore *MongoRestore) filterHs(op db.Oplog) (db.Oplog, error) {
+	// Remove h from oplog entries
+	op.Hash = nil
+
+	// Check for and filter nested applyOps ops
+	if op.Operation == "c" && isApplyOpsCmd(op.Object) {
+		ops, err := unwrapNestedApplyOps(op.Object)
+		if err != nil {
+			return db.Oplog{}, err
+		}
+
+		filtered := make([]db.Oplog, len(ops))
+		for i, v := range ops {
+			filtered[i], err = restore.filterUUIDs(v)
+			if err != nil {
+				return db.Oplog{}, err
+			}
+		}
+
+		doc, err := wrapNestedApplyOps(filtered)
+		if err != nil {
+			return db.Oplog{}, err
+		}
+
+		op.Object = doc
 	}
 
 	return op, nil

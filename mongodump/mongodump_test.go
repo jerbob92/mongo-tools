@@ -12,6 +12,7 @@ import (
 	"crypto/sha1"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"math/rand"
 	"os"
@@ -20,6 +21,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/mongodb/mongo-tools/common/archive"
 	"github.com/mongodb/mongo-tools/common/bsonutil"
@@ -106,6 +110,16 @@ func countNonIndexBSONFiles(dir string) (int, error) {
 		return 0, err
 	}
 	return len(files), nil
+}
+
+func assertBSONEqual(t *testing.T, expected, actual any) {
+	expectedJSON, err := bson.MarshalExtJSONIndent(expected, false, false, "", "    ")
+	require.NoError(t, err)
+
+	actualJSON, err := bson.MarshalExtJSONIndent(actual, false, false, "", "    ")
+	require.NoError(t, err)
+
+	assert.Equal(t, string(expectedJSON), string(actualJSON))
 }
 
 func listNonIndexBSONFiles(dir string) ([]string, error) {
@@ -347,6 +361,33 @@ func setUpDBView(dbName string, colName string) error {
 	return nil
 }
 
+func setUpColumnstoreIndex(dbName string, colName string) error {
+	sessionProvider, _, err := testutil.GetBareSessionProvider()
+	if err != nil {
+		return err
+	}
+
+	createIndexCmd := bson.D{
+		{"createIndexes", colName},
+		{"indexes", bson.A{
+			bson.D{
+				{"key", bson.D{{"$**", "columnstore"}}},
+				{"name", "dump_columnstore_test"},
+				{"columnstoreProjection", bson.D{
+					{"_id", 1},
+				}},
+			},
+		}},
+	}
+	var r bson.M
+	err = sessionProvider.Run(createIndexCmd, &r, dbName)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func turnOnProfiling(dbName string) error {
 	sessionProvider, _, err := testutil.GetBareSessionProvider()
 	if err != nil {
@@ -574,7 +615,7 @@ func TestMongoDumpValidateOptions(t *testing.T) {
 			md.ToolOptions.Namespace.Collection = "some_collection"
 			md.ToolOptions.Namespace.DB = ""
 
-			err := md.Init()
+			err := md.ValidateOptions()
 			So(err, ShouldNotBeNil)
 			So(err.Error(), ShouldContainSubstring, "cannot dump a collection without a specified database")
 		})
@@ -584,12 +625,42 @@ func TestMongoDumpValidateOptions(t *testing.T) {
 			md.OutputOptions.Out = ""
 			md.InputOptions.Query = "{_id:\"\"}"
 
-			err := md.Init()
+			err := md.ValidateOptions()
 			So(err, ShouldNotBeNil)
 			So(err.Error(), ShouldContainSubstring, "cannot dump using a query without a specified collection")
 		})
 
 	})
+}
+
+func TestMongoDumpConnectedToAtlasProxy(t *testing.T) {
+	testtype.SkipUnlessTestType(t, testtype.IntegrationTestType)
+	log.SetWriter(ioutil.Discard)
+
+	sessionProvider, _, err := testutil.GetBareSessionProvider()
+	require.NoError(t, err)
+	defer sessionProvider.Close()
+
+	md := simpleMongoDumpInstance()
+	md.isAtlasProxy = true
+	md.OutputOptions.DumpDBUsersAndRoles = false
+	md.SessionProvider = sessionProvider
+
+	session, err := sessionProvider.GetSession()
+	// This case shouldn't error and should instead not return that it will try to restore users and roles.
+	_, err = session.Database("admin").Collection("testcol").InsertOne(nil, bson.M{})
+	require.NoError(t, err)
+	dbNames, err := md.GetValidDbs()
+	require.NoError(t, err)
+	require.NotContains(t, dbNames, "admin")
+
+	// This case should error because it has explicitly been set to dump users and roles for a DB, but thats
+	// not possible with an atlas proxy.
+	md.OutputOptions.DumpDBUsersAndRoles = true
+	err = md.ValidateOptions()
+	require.Error(t, err, "can't dump from admin database when connecting to a MongoDB Atlas free or shared cluster")
+
+	session.Database("admin").Collection("testcol").Drop(nil)
 }
 
 func TestMongoDumpBSON(t *testing.T) {
@@ -773,7 +844,7 @@ func TestMongoDumpBSONLongCollectionName(t *testing.T) {
 	}
 	fcv := testutil.GetFCV(session)
 	if cmp, err := testutil.CompareFCV(fcv, "4.4"); err != nil || cmp < 0 {
-		t.Skip("Requires server with FCV 4.4 or later")
+		t.Skipf("Requires server with FCV 4.4 or later; found %v", fcv)
 	}
 
 	log.SetWriter(ioutil.Discard)
@@ -1166,7 +1237,7 @@ func TestMongoDumpTOOLS2498(t *testing.T) {
 		err = md.Dump()
 		// Mongodump should not panic, but return correct error if failed to getCollectionInfo
 		So(err, ShouldNotBeNil)
-		So(err.Error(), ShouldEqual, "client is disconnected")
+		So(err.Error(), ShouldContainSubstring, "client is disconnected")
 	})
 }
 
@@ -1496,18 +1567,18 @@ func TestTimeseriesCollections(t *testing.T) {
 
 	session, err := testutil.GetBareSession()
 	if err != nil {
-		t.Errorf("could not get session: %v", err)
+		t.Fatalf("Failed to get session: %v", err)
 	}
 	fcv := testutil.GetFCV(session)
 	if cmp, err := testutil.CompareFCV(fcv, "5.0"); err != nil || cmp < 0 {
-		t.Skip("Requires server with FCV 5.0 or later")
+		t.Skipf("Requires server with FCV 5.0 or later; found %v", fcv)
 	}
 
 	colName := "timeseriesColl"
 	dbName := "timeseries_test_DB"
 	err = setUpTimeseries(dbName, colName)
 	if err != nil {
-		t.Errorf("could not setup timeseries collection: %v", err)
+		t.Fatalf("Failed to set up timeseries collection: %v", err)
 	}
 
 	Convey("With a MongoDump instance", t, func() {
@@ -1828,7 +1899,7 @@ func TestTimeseriesCollections(t *testing.T) {
 
 	err = dropDB(dbName)
 	if err != nil {
-		t.Errorf("could not setup timeseries collection: %v", err)
+		t.Logf("Failed to drop timeseries collection: %v", err)
 	}
 }
 
@@ -1837,23 +1908,23 @@ func TestFailDuringResharding(t *testing.T) {
 
 	sessionProvider, _, err := testutil.GetBareSessionProvider()
 	if err != nil {
-		t.Errorf("could not get session provider: %v", err)
+		t.Fatalf("Failed to get session provider: %v", err)
 	}
 
 	session, err := sessionProvider.GetSession()
 	if err != nil {
-		t.Errorf("could not get session: %v", err)
+		t.Fatalf("Failed to get session: %v", err)
 	}
 
 	fcv := testutil.GetFCV(session)
 	if cmp, err := testutil.CompareFCV(fcv, "4.9"); err != nil || cmp < 0 {
-		t.Skip("Requires server with FCV 4.9 or later")
+		t.Skipf("Requires server with FCV 4.9 or later; found %v", fcv)
 	}
 
 	ctx := context.Background()
 
 	if ok, _ := sessionProvider.IsReplicaSet(); !ok {
-		t.SkipNow()
+		t.Skipf("Not for replica sets")
 	}
 
 	Convey("With a MongoDump instance", t, func() {
@@ -1900,21 +1971,13 @@ func TestFailDuringResharding(t *testing.T) {
 			failpoint.ParseFailpoints("PauseBeforeDumping")
 			defer failpoint.Reset()
 
-			done := make(chan struct{})
 			go func() {
-				select {
-				case <-done:
-					return
-				default:
-					session.Database("config").CreateCollection(ctx, "reshardingOperations")
-					time.Sleep(1 * time.Second)
-					session.Database("config").Collection("reshardingOperations").Drop(ctx)
-					time.Sleep(1 * time.Second)
-				}
+				time.Sleep(2 * time.Second)
+				session.Database("config").CreateCollection(ctx, "reshardingOperations")
+				session.Database("config").Collection("reshardingOperations").Drop(ctx)
 			}()
 
 			err = md.Dump()
-			close(done)
 
 			So(err, ShouldNotBeNil)
 			So(err.Error(), ShouldContainSubstring, OplogErrorMsg)
@@ -1924,21 +1987,13 @@ func TestFailDuringResharding(t *testing.T) {
 			failpoint.ParseFailpoints("PauseBeforeDumping")
 			defer failpoint.Reset()
 
-			done := make(chan struct{})
 			go func() {
-				select {
-				case <-done:
-					return
-				default:
-					session.Database("config").CreateCollection(ctx, "localReshardingOperations.donor")
-					time.Sleep(1 * time.Second)
-					session.Database("config").Collection("localReshardingOperations.donor").Drop(ctx)
-					time.Sleep(1 * time.Second)
-				}
+				time.Sleep(2 * time.Second)
+				session.Database("config").CreateCollection(ctx, "localReshardingOperations.donor")
+				session.Database("config").Collection("localReshardingOperations.donor").Drop(ctx)
 			}()
 
 			err = md.Dump()
-			close(done)
 
 			So(err, ShouldNotBeNil)
 			So(err.Error(), ShouldContainSubstring, OplogErrorMsg)
@@ -1948,25 +2003,195 @@ func TestFailDuringResharding(t *testing.T) {
 			failpoint.ParseFailpoints("PauseBeforeDumping")
 			defer failpoint.Reset()
 
-			done := make(chan struct{})
 			go func() {
-				select {
-				case <-done:
-					return
-				default:
-					session.Database("config").CreateCollection(ctx, "localReshardingOperations.recipient")
-					time.Sleep(1 * time.Second)
-					session.Database("config").Collection("localReshardingOperations.recipient").Drop(ctx)
-					time.Sleep(1 * time.Second)
-				}
+				time.Sleep(2 * time.Second)
+				session.Database("config").CreateCollection(ctx, "localReshardingOperations.recipient")
+				session.Database("config").Collection("localReshardingOperations.recipient").Drop(ctx)
 			}()
 
 			err = md.Dump()
-			close(done)
 
 			So(err, ShouldNotBeNil)
 			So(err.Error(), ShouldContainSubstring, OplogErrorMsg)
 		})
 
 	})
+}
+
+// TestMongoDumpColumnstoreIndexes tests dumping a collection with Columnstore Indexes.
+func TestMongoDumpColumnstoreIndexes(t *testing.T) {
+	testtype.SkipUnlessTestType(t, testtype.IntegrationTestType)
+	log.SetWriter(ioutil.Discard)
+
+	session, err := testutil.GetBareSession()
+	if err != nil {
+		t.Fatalf("Failed to get session: %v", err)
+	}
+	fcv := testutil.GetFCV(session)
+	if cmp, err := testutil.CompareFCV(fcv, "6.3"); err != nil || cmp < 0 {
+		t.Skipf("Requires server with FCV 6.3 or later; found %v", fcv)
+	}
+
+	// Create Columnstore indexes.
+	for _, colName := range testCollectionNames {
+		err := setUpColumnstoreIndex(testDB, colName)
+		if strings.Contains(err.Error(), "(NotImplemented) columnstore indexes are under development and cannot be used without enabling the feature flag") {
+			t.Skip("Requires columnstore indexes to be implemented")
+		}
+		require.NoError(t, err)
+	}
+
+	require.NoError(t, setUpMongoDumpTestData())
+
+	md := simpleMongoDumpInstance()
+	md.ToolOptions.Namespace.DB = testDB
+	md.OutputOptions.Out = "dump"
+
+	require.NoError(t, md.Init())
+	require.NoError(t, md.Dump())
+
+	defer tearDownMongoDumpTestData()
+
+	path, err := os.Getwd()
+	require.NoError(t, err)
+
+	dumpDir := util.ToUniversalPath(filepath.Join(path, "dump"))
+	dumpDBDir := util.ToUniversalPath(filepath.Join(dumpDir, testDB))
+	require.True(t, fileDirExists(dumpDir))
+	require.True(t, fileDirExists(dumpDBDir))
+
+	defer os.RemoveAll(dumpDir)
+
+	c1, err := countNonIndexBSONFiles(dumpDBDir)
+	require.NoError(t, err)
+
+	c2, err := countMetaDataFiles(dumpDBDir)
+	require.NoError(t, err)
+	require.Equal(t, c1, c2)
+
+	metaFiles, err := getMatchingFiles(dumpDBDir, ".*\\.metadata\\.json")
+	require.NoError(t, err)
+	require.Greater(t, len(metaFiles), 0)
+
+	for _, metaFile := range metaFiles {
+		oneMetaFile, err := os.Open(util.ToUniversalPath(filepath.Join(dumpDBDir, metaFile)))
+		defer oneMetaFile.Close()
+		require.NoError(t, err)
+		contents, err := ioutil.ReadAll(oneMetaFile)
+		var jsonResult map[string]interface{}
+		err = json.Unmarshal(contents, &jsonResult)
+		require.NoError(t, err)
+
+		indexes, ok := jsonResult["indexes"]
+		require.True(t, ok)
+		count := 0
+
+		for _, index := range indexes.([]interface{}) {
+			indexMap, ok := index.(map[string]interface{})
+			require.True(t, ok)
+
+			if indexMap["name"] == "dump_columnstore_test" {
+				count = count + 1
+
+				require.Contains(t, indexMap, "columnstoreProjection")
+
+				key, ok := indexMap["key"].(map[string]interface{})
+				require.True(t, ok)
+				require.Equal(t, key, map[string]interface{}{"$**": "columnstore"})
+			}
+		}
+		// Expect exactly one index with name "dump_columnstore_test"
+		require.Equal(t, count, 1)
+	}
+}
+
+func TestOptionsOrderIsPreserved(t *testing.T) {
+	testtype.SkipUnlessTestType(t, testtype.IntegrationTestType)
+	log.SetWriter(io.Discard)
+
+	sessionProvider, _, err := testutil.GetBareSessionProvider()
+	require.NoError(t, err)
+
+	collName := "students"
+	viewName := "studentsView"
+
+	pipeline := bson.A{
+		bson.D{{Key: "$group", Value: bson.D{
+			{Key: "_id", Value: bson.D{
+				{Key: "year", Value: "$year"},
+				{Key: "name", Value: "$name"},
+			}},
+			{Key: "highest", Value: bson.D{
+				{Key: "$max", Value: "$score"},
+			}},
+		}}},
+		bson.D{{Key: "$project", Value: bson.D{
+			{Key: "_id", Value: 0},
+		}}},
+		bson.D{{Key: "$sort", Value: bson.D{
+			{Key: "year", Value: 1},
+			{Key: "sID", Value: -1},
+			{Key: "name", Value: 1},
+			{Key: "score", Value: 1},
+		}}},
+	}
+
+	createViewCmd := bson.D{
+		{"create", viewName},
+		{"viewOn", collName},
+		{"pipeline", pipeline},
+	}
+
+	var result bson.D
+	err = sessionProvider.Run(createViewCmd, &result, testDB)
+	require.NoError(t, err)
+
+	// The check should be run a few times due to the probablistic nature
+	// of TOOLS-3411
+	for i := 0; i < 10; i++ {
+		dumpAndCheckPipelineOrder(t, collName, pipeline)
+	}
+
+	tearDownMongoDumpTestData()
+}
+
+func dumpAndCheckPipelineOrder(t *testing.T, collName string, pipeline bson.A) {
+	md := simpleMongoDumpInstance()
+
+	md.ToolOptions.Namespace.DB = testDB
+	md.OutputOptions.Out = "dump"
+
+	require.NoError(t, md.Init())
+	require.NoError(t, md.Dump())
+
+	path, err := os.Getwd()
+	require.NoError(t, err)
+
+	dumpDir := util.ToUniversalPath(filepath.Join(path, "dump"))
+	dumpDBDir := util.ToUniversalPath(filepath.Join(dumpDir, testDB))
+	require.True(t, fileDirExists(dumpDir))
+	require.True(t, fileDirExists(dumpDBDir))
+
+	metaFiles, err := getMatchingFiles(dumpDBDir, "studentsView\\.metadata\\.json")
+	require.NoError(t, err)
+	require.Equal(t, len(metaFiles), 1)
+
+	metaFile, err := os.Open(util.ToUniversalPath(filepath.Join(dumpDBDir, metaFiles[0])))
+
+	require.NoError(t, err)
+	contents, err := io.ReadAll(metaFile)
+
+	var bsonResult bson.D
+	err = bson.UnmarshalExtJSON(contents, true, &bsonResult)
+	require.NoError(t, err)
+	options, err := bsonutil.FindSubdocumentByKey("options", &bsonResult)
+	require.NoError(t, err)
+
+	assertBSONEqual(t, options, bson.D{
+		{Key: "viewOn", Value: collName},
+		{Key: "pipeline", Value: pipeline},
+	})
+
+	os.RemoveAll(dumpDir)
+	metaFile.Close()
 }

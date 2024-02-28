@@ -49,7 +49,7 @@ functions:
         chmod +x bin/*
         mv bin/* ${test_path}/
         cd ${test_path}
-        ./mongo --nodb jstests/tool/*.js
+        ./mongo --nodb lib/run_mongod.js jstests/tool/*.js
 
   "run qa-tests":
     command: subprocess.exec
@@ -81,13 +81,14 @@ functions:
         go run build.go -v ${target}
 
   "download mongod and shell":
-    command: subprocess.exec
-    params:
-      working_dir: src/github.com/mongodb/mongo-tools
-      binary: bash
-      args:
-        - "./scripts/download_mongod_and_shell.sh"
-      add_expansions_to_env: true
+    - command: shell.exec
+      params:
+        working_dir: src/github.com/mongodb/mongo-tools
+        script: |
+          ${_set_shell_env}
+          ${_maybe_enable_devtoolset_7}
+          PATH=$PATH:$HOME
+          go run release/release.go download-mongod-and-shell --server-version ${mongo_version}
 
   "get buildnumber":
     command: keyval.inc
@@ -216,6 +217,8 @@ functions:
         working_dir: src/github.com/mongodb/mongo-tools
         script: |
           ${_set_shell_env}
+          ${_maybe_enable_devtoolset_7}
+          PATH=$PATH:$HOME
           go run release/release.go build-archive
           go run release/release.go build-packages
 
@@ -466,7 +469,7 @@ functions:
           set -x
           set -v
           set -e
-          curl -sfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s v1.47.3
+          curl -sfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s v1.54.2
 
   "create repl_set":
     - command: shell.exec
@@ -636,6 +639,7 @@ pre:
           export NOTARY_TOKEN_4_4='${signing_auth_token_server_4_4}'
           export NOTARY_TOKEN_5_0='${signing_auth_token_server_5_0}'
           export NOTARY_TOKEN_6_0='${signing_auth_token_server_6_0}'
+          export NOTARY_TOKEN_7_0='${signing_auth_token_server_7_0}'
           export BARQUE_USERNAME='${evg_user}'
           export BARQUE_API_KEY='${barque_api_key}'
           export TOOLS_TESTING_AUTH_USERNAME='${auth_username}'
@@ -702,7 +706,9 @@ tasks:
     depends_on:
     commands:
       - func: "fetch source"
-      # bsondump
+      - func: "run make target"
+        vars:
+          target: checkMinVersion
       - func: "run make target"
         vars:
           target: build
@@ -751,42 +757,6 @@ tasks:
       - command: expansions.update
       - func: "generate full JSON feed"
 
-  - name: integration-3.4
-    tags: ["3.4", "integration"]
-    commands:
-      - func: "fetch source"
-      - command: expansions.update
-      - func: "download mongod and shell"
-        vars:
-          mongo_version: "3.4"
-      - func: "start mongod"
-      - func: "wait for mongod to be ready"
-      - func: "run make target"
-        vars:
-          target: build
-      - func: "run make target"
-        vars:
-          target: test:integration test:srv -ssl=true
-
-  - name: integration-3.4-mmapv1
-    tags: ["3.4", "mmap"]
-    commands:
-      - func: "fetch source"
-      - command: expansions.update
-      - func: "download mongod and shell"
-        vars:
-          mongo_version: "3.4"
-      - func: "start mongod"
-        vars:
-          STORAGE_ENGINE: "mmapv1"
-      - func: "wait for mongod to be ready"
-      - func: "run make target"
-        vars:
-          target: build
-      - func: "run make target"
-        vars:
-          target: test:integration test:srv -ssl=true
-
   - name: integration-3.6
     tags: ["3.6"]
     commands:
@@ -802,7 +772,7 @@ tasks:
           target: build
       - func: "run make target"
         vars:
-          target: test:integration test:srv -ssl=true
+          target: test:integration -ssl=true
 
   - name: integration-3.6-mmapv1
     tags: ["3.6", "mmap"]
@@ -821,7 +791,7 @@ tasks:
           target: build
       - func: "run make target"
         vars:
-          target: test:integration test:srv -ssl=true
+          target: test:integration -ssl=true
 
   - name: integration-4.0
     tags: ["4.0"]
@@ -838,7 +808,7 @@ tasks:
           target: build
       - func: "run make target"
         vars:
-          target: test:integration test:srv -ssl=true
+          target: test:integration -ssl=true
 
   - name: integration-4.0-auth
     tags: ["4.0", "auth"]
@@ -861,7 +831,7 @@ tasks:
           target: build
       - func: "run make target"
         vars:
-          target: test:integration test:srv -ssl=true -auth=true
+          target: test:integration -ssl=true -auth=true
 
   - name: integration-4.0-cluster
     tags: ["4.0", "cluster"]
@@ -879,7 +849,7 @@ tasks:
           target: build
       - func: "run make target"
         vars:
-          target: test:integration test:srv -ssl=true
+          target: test:integration -ssl=true
 
   - name: integration-4.0-mmapv1
     tags: ["4.0", "mmap"]
@@ -898,7 +868,7 @@ tasks:
           target: build
       - func: "run make target"
         vars:
-          target: test:integration test:srv -ssl=true
+          target: test:integration -ssl=true
 
   - name: integration-4.2
     tags: ["4.2"]
@@ -919,7 +889,7 @@ tasks:
           target: build
       - func: "run make target"
         vars:
-          target: test:integration test:srv -ssl=true
+          target: test:integration -ssl=true
 
   - name: integration-4.2-auth
     tags: ["4.2", "auth"]
@@ -948,7 +918,7 @@ tasks:
           target: build
       - func: "run make target"
         vars:
-          target: test:integration test:srv -ssl=true -auth=true
+          target: test:integration -ssl=true -auth=true
 
   - name: integration-4.4
     tags: ["4.4"]
@@ -969,7 +939,7 @@ tasks:
           target: build
       - func: "run make target"
         vars:
-          target: test:integration test:srv -ssl=true
+          target: test:integration -ssl=true
 
   - name: integration-4.4-auth
     tags: ["4.4", "auth"]
@@ -998,7 +968,7 @@ tasks:
           target: build
       - func: "run make target"
         vars:
-          target: test:integration test:srv -ssl=true -auth=true
+          target: test:integration -ssl=true -auth=true
 
   - name: integration-4.4-cluster
     tags: ["4.4", "cluster"]
@@ -1016,7 +986,7 @@ tasks:
           target: build
       - func: "run make target"
         vars:
-          target: test:integration test:srv -ssl=true -topology=replSet
+          target: test:integration -ssl=true -topology=replSet
 
   - name: integration-5.0
     tags: ["5.0"]
@@ -1037,7 +1007,7 @@ tasks:
           target: build
       - func: "run make target"
         vars:
-          target: test:integration test:srv -ssl=true
+          target: test:integration -ssl=true
 
   - name: integration-5.0-auth
     tags: ["5.0", "auth"]
@@ -1066,7 +1036,7 @@ tasks:
           target: build
       - func: "run make target"
         vars:
-          target: test:integration test:srv -ssl=true -auth=true
+          target: test:integration -ssl=true -auth=true
 
   - name: integration-5.0-cluster
     tags: ["5.0", "cluster"]
@@ -1084,7 +1054,7 @@ tasks:
           target: build
       - func: "run make target"
         vars:
-          target: test:integration test:srv -ssl=true -topology=replSet
+          target: test:integration -ssl=true -topology=replSet
 
   - name: aws-auth-5.0
     tags: ["5.0", "aws-auth"]
@@ -1093,271 +1063,8 @@ tasks:
       - command: expansions.update
       - func: "download mongod and shell"
         vars:
+          edition: "enterprise"
           mongo_version: "5.0"
-      - func: "start mongod"
-        vars:
-          AWS_AUTH: "true"
-      - func: "wait for mongod to be ready"
-        vars:
-          AWS_AUTH: "true"
-      - func: "add-aws-auth-variables-to-file"
-      - func: "setup-aws-auth-test-with-assume-role-credentials"
-      - func: "run make target"
-        vars:
-          target: test:awsauth
-
-  - name: integration-5.1
-    tags: ["5.1"]
-    commands:
-      - func: "fetch source"
-      - command: expansions.update
-      - func: "download mongod and shell"
-        vars:
-          mongo_version: "5.1"
-      - func: "start mongod"
-        vars:
-          USE_TLS: "true"
-      - func: "wait for mongod to be ready"
-        vars:
-          USE_TLS: "true"
-      - func: "run make target"
-        vars:
-          target: build
-      - func: "run make target"
-        vars:
-          target: test:integration test:srv -ssl=true
-
-  - name: integration-5.1-auth
-    tags: ["5.1", "auth"]
-    commands:
-      - func: "fetch source"
-      # Concat auth args
-      - command: expansions.update
-        params:
-          updates:
-            - key: "mongod_args_tls"
-              concat: " --auth"
-      - func: "download mongod and shell"
-        vars:
-          mongo_version: "5.1"
-      - func: "start mongod"
-        vars:
-          USE_TLS: "true"
-      - func: "wait for mongod to be ready"
-        vars:
-          USE_TLS: "true"
-      - func: "create mongod users"
-        vars:
-          USE_TLS: "true"
-      - func: "run make target"
-        vars:
-          target: build
-      - func: "run make target"
-        vars:
-          target: test:integration test:srv -ssl=true -auth=true
-
-  - name: integration-5.1-cluster
-    tags: ["5.1", "cluster"]
-    commands:
-      - func: "fetch source"
-      - command: expansions.update
-      - func: "download mongod and shell"
-        vars:
-          mongo_version: "5.1"
-      - func: "create repl_set"
-        vars:
-          USE_TLS: "true"
-      - func: "run make target"
-        vars:
-          target: build
-      - func: "run make target"
-        vars:
-          target: test:integration test:srv -ssl=true -topology=replSet
-
-  - name: aws-auth-5.1
-    tags: ["5.1", "aws-auth"]
-    commands:
-      - func: "fetch source"
-      - command: expansions.update
-      - func: "download mongod and shell"
-        vars:
-          mongo_version: "5.1"
-      - func: "start mongod"
-        vars:
-          AWS_AUTH: "true"
-      - func: "wait for mongod to be ready"
-        vars:
-          AWS_AUTH: "true"
-      - func: "add-aws-auth-variables-to-file"
-      - func: "setup-aws-auth-test-with-assume-role-credentials"
-      - func: "run make target"
-        vars:
-          target: test:awsauth
-
-  - name: integration-5.2
-    tags: ["5.2"]
-    commands:
-      - func: "fetch source"
-      - command: expansions.update
-      - func: "download mongod and shell"
-        vars:
-          mongo_version: "5.2"
-      - func: "start mongod"
-        vars:
-          USE_TLS: "true"
-      - func: "wait for mongod to be ready"
-        vars:
-          USE_TLS: "true"
-      - func: "run make target"
-        vars:
-          target: build
-      - func: "run make target"
-        vars:
-          target: test:integration test:srv -ssl=true
-
-  - name: integration-5.2-auth
-    tags: ["5.2", "auth"]
-    commands:
-      - func: "fetch source"
-      # Concat auth args
-      - command: expansions.update
-        params:
-          updates:
-            - key: "mongod_args_tls"
-              concat: " --auth"
-      - func: "download mongod and shell"
-        vars:
-          mongo_version: "5.2"
-      - func: "start mongod"
-        vars:
-          USE_TLS: "true"
-      - func: "wait for mongod to be ready"
-        vars:
-          USE_TLS: "true"
-      - func: "create mongod users"
-        vars:
-          USE_TLS: "true"
-      - func: "run make target"
-        vars:
-          target: build
-      - func: "run make target"
-        vars:
-          target: test:integration test:srv -ssl=true -auth=true
-
-  - name: integration-5.2-cluster
-    tags: ["5.2", "cluster"]
-    commands:
-      - func: "fetch source"
-      - command: expansions.update
-      - func: "download mongod and shell"
-        vars:
-          mongo_version: "5.2"
-      - func: "create repl_set"
-        vars:
-          USE_TLS: "true"
-      - func: "run make target"
-        vars:
-          target: build
-      - func: "run make target"
-        vars:
-          target: test:integration test:srv -ssl=true -topology=replSet
-
-  - name: aws-auth-5.2
-    tags: ["5.2", "aws-auth"]
-    commands:
-      - func: "fetch source"
-      - command: expansions.update
-      - func: "download mongod and shell"
-        vars:
-          mongo_version: "5.2"
-      - func: "start mongod"
-        vars:
-          AWS_AUTH: "true"
-      - func: "wait for mongod to be ready"
-        vars:
-          AWS_AUTH: "true"
-      - func: "add-aws-auth-variables-to-file"
-      - func: "setup-aws-auth-test-with-assume-role-credentials"
-      - func: "run make target"
-        vars:
-          target: test:awsauth
-
-  - name: integration-5.3
-    tags: ["5.3"]
-    commands:
-      - func: "fetch source"
-      - command: expansions.update
-      - func: "download mongod and shell"
-        vars:
-          mongo_version: "5.3"
-      - func: "start mongod"
-        vars:
-          USE_TLS: "true"
-      - func: "wait for mongod to be ready"
-        vars:
-          USE_TLS: "true"
-      - func: "run make target"
-        vars:
-          target: build
-      - func: "run make target"
-        vars:
-          target: test:integration test:srv -ssl=true
-
-  - name: integration-5.3-auth
-    tags: ["5.3", "auth"]
-    commands:
-      - func: "fetch source"
-      # Concat auth args
-      - command: expansions.update
-        params:
-          updates:
-            - key: "mongod_args_tls"
-              concat: " --auth"
-      - func: "download mongod and shell"
-        vars:
-          mongo_version: "5.3"
-      - func: "start mongod"
-        vars:
-          USE_TLS: "true"
-      - func: "wait for mongod to be ready"
-        vars:
-          USE_TLS: "true"
-      - func: "create mongod users"
-        vars:
-          USE_TLS: "true"
-      - func: "run make target"
-        vars:
-          target: build
-      - func: "run make target"
-        vars:
-          target: test:integration test:srv -ssl=true -auth=true
-
-  - name: integration-5.3-cluster
-    tags: ["5.3", "cluster"]
-    commands:
-      - func: "fetch source"
-      - command: expansions.update
-      - func: "download mongod and shell"
-        vars:
-          mongo_version: "5.3"
-      - func: "create repl_set"
-        vars:
-          USE_TLS: "true"
-      - func: "run make target"
-        vars:
-          target: build
-      - func: "run make target"
-        vars:
-          target: test:integration test:srv -ssl=true -topology=replSet
-
-  - name: aws-auth-5.3
-    tags: ["5.3", "aws-auth"]
-    commands:
-      - func: "fetch source"
-      - command: expansions.update
-      - func: "download mongod and shell"
-        vars:
-          mongo_version: "5.3"
       - func: "start mongod"
         vars:
           AWS_AUTH: "true"
@@ -1389,7 +1096,7 @@ tasks:
           target: build
       - func: "run make target"
         vars:
-          target: test:integration test:srv -ssl=true
+          target: test:integration -ssl=true
 
   - name: integration-6.0-auth
     tags: ["6.0", "auth"]
@@ -1418,7 +1125,7 @@ tasks:
           target: build
       - func: "run make target"
         vars:
-          target: test:integration test:srv -ssl=true -auth=true
+          target: test:integration -ssl=true -auth=true
 
   - name: integration-6.0-cluster
     tags: ["6.0", "cluster"]
@@ -1436,7 +1143,7 @@ tasks:
           target: build
       - func: "run make target"
         vars:
-          target: test:integration test:srv -ssl=true -topology=replSet
+          target: test:integration -ssl=true -topology=replSet
 
   - name: aws-auth-6.0
     tags: ["6.0", "aws-auth"]
@@ -1445,7 +1152,97 @@ tasks:
       - command: expansions.update
       - func: "download mongod and shell"
         vars:
+          edition: "enterprise"
           mongo_version: "6.0"
+      - func: "start mongod"
+        vars:
+          AWS_AUTH: "true"
+      - func: "wait for mongod to be ready"
+        vars:
+          AWS_AUTH: "true"
+      - func: "add-aws-auth-variables-to-file"
+      - func: "setup-aws-auth-test-with-assume-role-credentials"
+      - func: "run make target"
+        vars:
+          target: test:awsauth
+
+  - name: integration-7.0
+    tags: [ "7.0" ]
+    commands:
+      - func: "fetch source"
+      - command: expansions.update
+      - func: "download mongod and shell"
+        vars:
+          mongo_version: "7.0"
+      - func: "start mongod"
+        vars:
+          USE_TLS: "true"
+      - func: "wait for mongod to be ready"
+        vars:
+          USE_TLS: "true"
+      - func: "run make target"
+        vars:
+          target: build
+      - func: "run make target"
+        vars:
+          target: test:integration -ssl=true
+
+  - name: integration-7.0-auth
+    tags: [ "7.0", "auth" ]
+    commands:
+      - func: "fetch source"
+      # Concat auth args
+      - command: expansions.update
+        params:
+          updates:
+            - key: "mongod_args_tls"
+              concat: " --auth"
+      - func: "download mongod and shell"
+        vars:
+          mongo_version: "7.0"
+      - func: "start mongod"
+        vars:
+          USE_TLS: "true"
+      - func: "wait for mongod to be ready"
+        vars:
+          USE_TLS: "true"
+      - func: "create mongod users"
+        vars:
+          USE_TLS: "true"
+      - func: "run make target"
+        vars:
+          target: build
+      - func: "run make target"
+        vars:
+          target: test:integration -ssl=true -auth=true
+
+  - name: integration-7.0-cluster
+    tags: [ "7.0", "cluster" ]
+    commands:
+      - func: "fetch source"
+      - command: expansions.update
+      - func: "download mongod and shell"
+        vars:
+          mongo_version: "7.0"
+      - func: "create repl_set"
+        vars:
+          USE_TLS: "true"
+      - func: "run make target"
+        vars:
+          target: build
+      - func: "run make target"
+        vars:
+          target: test:integration -ssl=true -topology=replSet
+
+  - name: aws-auth-7.0
+    tags: [ "7.0", "aws-auth" ]
+    commands:
+      - func: "fetch source"
+      - command: expansions.update
+      - func: "download mongod and shell"
+        vars:
+          edition: "enterprise"
+          mongo_version: "7.0"
       - func: "start mongod"
         vars:
           AWS_AUTH: "true"
@@ -1477,7 +1274,7 @@ tasks:
           target: build
       - func: "run make target"
         vars:
-          target: test:integration test:srv -ssl=true
+          target: test:integration -ssl=true
 
   - name: integration-latest-auth
     tags: ["latest", "auth"]
@@ -1506,7 +1303,7 @@ tasks:
           target: build
       - func: "run make target"
         vars:
-          target: test:integration test:srv -ssl=true -auth=true
+          target: test:integration -ssl=true -auth=true
 
   - name: integration-latest-cluster
     tags: ["latest", "cluster"]
@@ -1524,7 +1321,7 @@ tasks:
           target: build
       - func: "run make target"
         vars:
-          target: test:integration test:srv -ssl=true -topology=replSet
+          target: test:integration -ssl=true -topology=replSet
 
   - name: aws-auth-latest
     tags: ["latest", "aws-auth"]
@@ -1533,6 +1330,7 @@ tasks:
       - command: expansions.update
       - func: "download mongod and shell"
         vars:
+          edition: "enterprise"
           mongo_version: "latest"
       - func: "start mongod"
         vars:
@@ -1553,6 +1351,7 @@ tasks:
       - command: expansions.update
       - func: "download mongod and shell"
         vars:
+          edition: "enterprise"
           mongo_version: "4.4"
       - func: "start mongod"
         vars:
@@ -1632,54 +1431,6 @@ tasks:
         vars:
           test_path: "test/legacy42"
 
-  - name: legacy-jstests-5.1 # The server jstests from the tools removal from server in 4.2
-    tags: ["5.1"]
-    commands:
-      - func: "fetch source"
-      - func: "get buildnumber"
-      - func: "setup credentials"
-      - func: "download mongod and shell"
-        vars:
-          mongo_version: "5.1"
-      - func: "run make target"
-        vars:
-          target: build
-      - func: "run legacy tests"
-        vars:
-          test_path: "test/legacy42"
-
-  - name: legacy-jstests-5.2 # The server jstests from the tools removal from server in 4.2
-    tags: ["5.2"]
-    commands:
-      - func: "fetch source"
-      - func: "get buildnumber"
-      - func: "setup credentials"
-      - func: "download mongod and shell"
-        vars:
-          mongo_version: "5.2"
-      - func: "run make target"
-        vars:
-          target: build
-      - func: "run legacy tests"
-        vars:
-          test_path: "test/legacy42"
-
-  - name: legacy-jstests-5.3 # The server jstests from the tools removal from server in 4.2
-    tags: ["5.3"]
-    commands:
-      - func: "fetch source"
-      - func: "get buildnumber"
-      - func: "setup credentials"
-      - func: "download mongod and shell"
-        vars:
-          mongo_version: "5.3"
-      - func: "run make target"
-        vars:
-          target: build
-      - func: "run legacy tests"
-        vars:
-          test_path: "test/legacy42"
-
   - name: legacy-jstests-6.0 # The server jstests from the tools removal from server in 4.2
     tags: ["6.0"]
     commands:
@@ -1689,6 +1440,22 @@ tasks:
       - func: "download mongod and shell"
         vars:
           mongo_version: "6.0"
+      - func: "run make target"
+        vars:
+          target: build
+      - func: "run legacy tests"
+        vars:
+          test_path: "test/legacy42"
+
+  - name: legacy-jstests-7.0 # The server jstests from the tools removal from server in 4.2
+    tags: ["7.0"]
+    commands:
+      - func: "fetch source"
+      - func: "get buildnumber"
+      - func: "setup credentials"
+      - func: "download mongod and shell"
+        vars:
+          mongo_version: "7.0"
       - func: "run make target"
         vars:
           target: build
@@ -1783,57 +1550,6 @@ tasks:
           resmoke_suite: "core${resmoke_use_tls}"
           excludes: "requires_unstable,${excludes}"
 
-  - name: qa-tests-5.1
-    tags: ["5.1"]
-    commands:
-      - func: "fetch source"
-      - func: "get buildnumber"
-      - func: "setup credentials"
-      - func: "download mongod and shell"
-        vars:
-          mongo_version: "5.1"
-      - func: "run make target"
-        vars:
-          target: build
-      - func: "run qa-tests"
-        vars:
-          resmoke_suite: "core${resmoke_use_tls}"
-          excludes: "requires_unstable,${excludes}"
-
-  - name: qa-tests-5.2
-    tags: ["5.2"]
-    commands:
-      - func: "fetch source"
-      - func: "get buildnumber"
-      - func: "setup credentials"
-      - func: "download mongod and shell"
-        vars:
-          mongo_version: "5.2"
-      - func: "run make target"
-        vars:
-          target: build
-      - func: "run qa-tests"
-        vars:
-          resmoke_suite: "core${resmoke_use_tls}"
-          excludes: "requires_unstable,${excludes}"
-
-  - name: qa-tests-5.3
-    tags: ["5.3"]
-    commands:
-      - func: "fetch source"
-      - func: "get buildnumber"
-      - func: "setup credentials"
-      - func: "download mongod and shell"
-        vars:
-          mongo_version: "5.3"
-      - func: "run make target"
-        vars:
-          target: build
-      - func: "run qa-tests"
-        vars:
-          resmoke_suite: "core${resmoke_use_tls}"
-          excludes: "requires_unstable,${excludes}"
-
   - name: qa-tests-6.0
     tags: ["6.0"]
     commands:
@@ -1843,6 +1559,23 @@ tasks:
       - func: "download mongod and shell"
         vars:
           mongo_version: "6.0"
+      - func: "run make target"
+        vars:
+          target: build
+      - func: "run qa-tests"
+        vars:
+          resmoke_suite: "core${resmoke_use_tls}"
+          excludes: "requires_unstable,${excludes}"
+
+  - name: qa-tests-7.0
+    tags: ["7.0"]
+    commands:
+      - func: "fetch source"
+      - func: "get buildnumber"
+      - func: "setup credentials"
+      - func: "download mongod and shell"
+        vars:
+          mongo_version: "7.0"
       - func: "run make target"
         vars:
           target: build
@@ -1936,23 +1669,6 @@ tasks:
           resmoke_suite: "core${resmoke_use_ssl}"
           excludes: "requires_min_mongo_40,requires_min_mongo_42,requires_unstable,${excludes}"
 
-  - name: qa-tests-3.4
-    tags: ["3.4"]
-    commands:
-      - func: "fetch source"
-      - func: "get buildnumber"
-      - func: "setup credentials"
-      - func: "download mongod and shell"
-        vars:
-          mongo_version: "3.4"
-      - func: "run make target"
-        vars:
-          target: build
-      - func: "run qa-tests"
-        vars:
-          resmoke_suite: "core${resmoke_use_ssl}"
-          excludes: "requires_min_mongo_36,requires_min_mongo_40,requires_min_mongo_42,requires_unstable,${excludes}"
-
   - name: native-cert-ssl-4.4
     tags: ["4.4"]
     commands:
@@ -2012,6 +1728,17 @@ tasks:
         vars:
           target: test:unit
 
+  - name: srv
+    commands:
+      - command: expansions.update
+      - func: "fetch source"
+      - func: "run make target"
+        vars:
+          target: build
+      - func: "run make target"
+        vars:
+          target: test:srv
+
   - name: vet
     commands:
       - func: "fetch source"
@@ -2020,10 +1747,11 @@ tasks:
         params:
           working_dir: src/github.com/mongodb/mongo-tools
           script: |
+            ${_set_shell_env}
             set -x
             set -v
             set -e
-            go tool vet bsondump mongo*
+            go vet -composites=false ./bsondump ./mongo*
 
   - name: third-party-licenses
     commands:
@@ -2038,9 +1766,9 @@ buildvariants:
   - name: static
     display_name: "! Static Analysis"
     run_on:
-      - rhel62-small
+      - rhel80-small
     expansions:
-      _platform: rhel62
+      _platform: rhel80
     tasks:
       - name: format-go
       - name: lint-go
@@ -2055,7 +1783,7 @@ buildvariants:
   #######################################
 
   - name: release
-    display_name: "Release Manager"
+    display_name: "! Release Manager"
     tags: ["git_tag"]
     run_on:
       - amazon1-2018-test
@@ -2071,75 +1799,25 @@ buildvariants:
     display_name: Amazon Linux 64
     run_on:
       - amazon1-2018-test
-    expansions:
-      <<:
-        [
-          *mongod_ssl_startup_args,
-          *mongo_ssl_startup_args,
-          *mongod_tls_startup_args,
-          *mongo_tls_startup_args,
-        ]
-      mongo_os: "amzn64"
-      mongo_edition: "enterprise"
-      smoke_use_ssl: --use-ssl
-      resmoke_use_ssl: _ssl
-      smoke_use_tls: --use-tls
-      resmoke_use_tls: _tls
-      edition: enterprise
-      run_kinit: true
-      resmoke_args: --jobs 4
     tasks:
-      - name: "unit"
-      - name: ".3.4"
-      - name: ".3.6"
-      - name: ".4.0"
-      - name: ".4.2"
-      - name: ".4.4"
-      - name: ".5.0"
-      - name: ".kerberos"
       - name: "dist"
       - name: "sign"
         run_on: rhel80-small
       - name: "push"
         run_on: rhel80-small
+        git_tag_only: true
 
   - name: amazon2
     display_name: Amazon Linux 64 v2
     run_on:
       - amazon2-test
-    expansions:
-      <<:
-        [
-          *mongod_ssl_startup_args,
-          *mongo_ssl_startup_args,
-          *mongod_tls_startup_args,
-          *mongo_tls_startup_args,
-        ]
-      mongo_os: "amazon2"
-      mongo_edition: "enterprise"
-      smoke_use_ssl: --use-ssl
-      resmoke_use_ssl: _ssl
-      smoke_use_tls: --use-tls
-      resmoke_use_tls: _tls
-      edition: enterprise
-      run_kinit: true
-      resmoke_args: --jobs 4
     tasks:
-      - name: "unit"
-      - name: ".3.6"
-      - name: ".4.0"
-      - name: ".4.2"
-      - name: ".4.4"
-      - name: ".5.0"
-      - name: ".5.3"
-      - name: ".6.0"
-      - name: ".latest"
-      - name: ".kerberos"
       - name: "dist"
       - name: "sign"
         run_on: rhel80-small
       - name: "push"
         run_on: rhel80-small
+        git_tag_only: true
 
   #######################################
   #     Debian x86_64 Buildvariants     #
@@ -2149,181 +1827,97 @@ buildvariants:
     display_name: Debian 8.1
     run_on:
       - debian81-test
-    expansions:
-      <<:
-        [
-          *mongod_ssl_startup_args,
-          *mongo_ssl_startup_args,
-          *mongod_tls_startup_args,
-          *mongo_tls_startup_args,
-        ]
-      mongo_os: "debian81"
-      mongo_edition: "enterprise"
-      smoke_use_ssl: --use-ssl
-      resmoke_use_ssl: _ssl
-      smoke_use_tls: --use-tls
-      resmoke_use_tls: _tls
-      edition: enterprise
-      run_kinit: true
-      resmoke_args: --jobs 4
     tasks:
-      - name: "unit"
-      - name: ".3.4"
-      - name: ".3.6"
       - name: "dist"
       - name: "sign"
         run_on: rhel80-small
       - name: "push"
         run_on: rhel80-small
+        git_tag_only: true
 
   - name: debian92
     display_name: Debian 9.2
     run_on:
       - debian92-test
-    expansions:
-      <<:
-        [
-          *mongod_ssl_startup_args,
-          *mongo_ssl_startup_args,
-          *mongod_tls_startup_args,
-          *mongo_tls_startup_args,
-        ]
-      mongo_os: "debian92"
-      mongo_edition: "enterprise"
-      smoke_use_ssl: --use-ssl
-      resmoke_use_ssl: _ssl
-      smoke_use_tls: --use-tls
-      resmoke_use_tls: _tls
-      edition: enterprise
-      run_kinit: true
-      resmoke_args: --jobs 4
     tasks:
-      - name: "unit"
-      - name: ".3.6"
-      - name: ".4.0"
-      - name: ".4.2"
-      - name: ".4.4"
-      - name: ".5.0"
-      - name: ".5.3"
-      - name: ".latest"
-      - name: ".kerberos"
       - name: "dist"
       - name: "sign"
         run_on: rhel80-small
       - name: "push"
         run_on: rhel80-small
+        git_tag_only: true
 
   - name: debian10
     display_name: Debian 10
     run_on:
       - debian10-test
-    expansions:
-      <<:
-        [
-          *mongod_ssl_startup_args,
-          *mongo_ssl_startup_args,
-          *mongod_tls_startup_args,
-          *mongo_tls_startup_args,
-        ]
-      mongo_os: "debian10"
-      mongo_edition: "enterprise"
-      smoke_use_ssl: --use-ssl
-      resmoke_use_ssl: _ssl
-      smoke_use_tls: --use-tls
-      resmoke_use_tls: _tls
-      edition: enterprise
-      run_kinit: true
-      resmoke_args: --jobs 4
     tasks:
-      - name: "unit"
-      - name: ".4.2"
-      - name: ".4.4"
-      - name: ".5.0"
-      - name: ".5.3"
-      - name: ".6.0"
-      - name: ".latest"
-      - name: ".kerberos"
       - name: "dist"
       - name: "sign"
         run_on: rhel80-small
       - name: "push"
         run_on: rhel80-small
+        git_tag_only: true
 
   - name: debian11
     display_name: Debian 11
     run_on:
       - debian11
-    expansions:
-      <<:
-        [
-          *mongod_ssl_startup_args,
-          *mongo_ssl_startup_args,
-          *mongod_tls_startup_args,
-          *mongo_tls_startup_args,
-        ]
-      mongo_os: "debian11"
-      mongo_edition: "enterprise"
-      smoke_use_ssl: --use-ssl
-      resmoke_use_ssl: _ssl
-      smoke_use_tls: --use-tls
-      resmoke_use_tls: _tls
-      edition: enterprise
-      run_kinit: true
-      resmoke_args: --jobs 4
-    # We do not support 5.1-5.3 on Debian 11
     tasks:
-      - name: "unit"
-      - name: ".5.0"
-      - name: ".6.0"
-      - name: ".latest"
-      - name: ".kerberos"
       - name: "dist"
       - name: "sign"
         run_on: rhel80-small
       - name: "push"
         run_on: rhel80-small
+        git_tag_only: true
+
+  - name: debian12
+    display_name: Debian 12
+    run_on:
+      - debian12-small
+    tasks:
+      - name: "dist"
+      - name: "sign"
+        run_on: rhel80-small
+      - name: "push"
+        run_on: rhel80-small
+        git_tag_only: true
 
   #######################################
-  #           macOS Buildvariant        #
+  #      macOS x86_64 Buildvariant      #
   #######################################
 
   - name: macos
-    display_name: MacOS 10.14
-    run_on:
-      - macos-1014
+    display_name: MacOS 11.00 x86_64
     expansions:
-      <<:
-        [
-          *mongod_ssl_startup_args,
-          *mongo_ssl_startup_args,
-          *mongod_tls_startup_args,
-          *mongo_tls_startup_args,
-        ]
       mongo_os: "osx"
-      mongo_target: "osx-ssl"
-      excludes: requires_many_files
-      smoke_use_ssl: --use-ssl
-      resmoke_use_ssl: _ssl
-      smoke_use_tls: --use-tls
-      resmoke_use_tls: _tls
-      USE_SSL: "true"
+    run_on:
+      - macos-1100
     tasks:
-      - name: "unit"
-      - name: ".3.4"
-      - name: ".3.6"
-      - name: ".4.0"
-      - name: ".4.2"
-      - name: ".4.4 !.aws-auth"
-      - name: ".5.0 !.aws-auth"
-      - name: ".5.3 !.aws-auth"
-      - name: ".6.0 !.aws-auth"
-      - name: ".latest !.aws-auth"
-      - name: ".kerberos"
       - name: "dist"
       - name: "sign"
         run_on: macos-1014-codesign
       - name: "push"
         run_on: rhel70-small
+        git_tag_only: true
+
+  #######################################
+  #       macOS ARM Buildvariant        #
+  #######################################
+
+  - name: macos-arm64
+    display_name: MacOS 11 ARM
+    expansions:
+      mongo_os: "osx"
+    run_on:
+      - macos-1100-arm64
+    tasks:
+      - name: "dist"
+      - name: "sign"
+        run_on: macos-1014-codesign
+      - name: "push"
+        run_on: rhel70-small
+        git_tag_only: true
 
   #######################################
   #     RHEL x86_64 Buildvariants       #
@@ -2331,8 +1925,21 @@ buildvariants:
 
   - name: rhel62
     display_name: RHEL 6.2
+    expansions:
+      mongo_os: "rhel62"
     run_on:
       - rhel62-small
+    tasks:
+      - name: "dist"
+      - name: "sign"
+        run_on: rhel80-small
+      - name: "push"
+        run_on: rhel80-small
+        git_tag_only: true
+
+  # This build is specifically for Splunk
+  - name: rhel62-no-sasl-or-kerberos
+    display_name: "# RHEL 6.2 w/o SASL or Kerberos"
     expansions:
       <<:
         [
@@ -2350,44 +1957,12 @@ buildvariants:
       edition: enterprise
       run_kinit: true
       resmoke_args: --jobs 4
-    tasks:
-      - name: "unit"
-      - name: ".3.4"
-      - name: ".3.6"
-      - name: ".4.0"
-      - name: ".4.2"
-      - name: ".4.4"
-      - name: ".kerberos"
-      - name: "dist"
-      - name: "sign"
-        run_on: rhel80-small
-      - name: "push"
-        run_on: rhel80-small
-
-  - name: rhel62-no-sasl-or-kerberos
-    display_name: RHEL 6.2 w/o SASL or Kerberos
     run_on:
       - rhel62-small
-    expansions:
-      <<:
-        [
-          *mongod_ssl_startup_args,
-          *mongo_ssl_startup_args,
-          *mongod_tls_startup_args,
-          *mongo_tls_startup_args,
-        ]
-      mongo_os: "rhel62"
-      mongo_edition: "enterprise"
-      smoke_use_ssl: --use-ssl
-      resmoke_use_ssl: _ssl
-      smoke_use_tls: --use-tls
-      resmoke_use_tls: _tls
-      edition: enterprise
-      run_kinit: false
-      resmoke_args: --jobs 4
     tasks:
       - name: "unit"
-      - name: ".4.4"
+      - name: ".3.6"
+      - name: ".4.0"
       - name: "dist"
       - name: "sign"
         run_on: rhel80-small
@@ -2398,43 +1973,16 @@ buildvariants:
     display_name: RHEL 7.0
     run_on:
       - rhel70-small
-    expansions:
-      <<:
-        [
-          *mongod_ssl_startup_args,
-          *mongo_ssl_startup_args,
-          *mongod_tls_startup_args,
-          *mongo_tls_startup_args,
-        ]
-      mongo_os: "rhel70"
-      mongo_edition: "enterprise"
-      smoke_use_ssl: --use-ssl
-      resmoke_use_ssl: _ssl
-      smoke_use_tls: --use-tls
-      resmoke_use_tls: _tls
-      edition: enterprise
-      run_kinit: true
-      resmoke_args: --jobs 4
     tasks:
-      - name: "unit"
-      - name: ".3.4"
-      - name: ".3.6"
-      - name: ".4.0"
-      - name: ".4.2"
-      - name: ".4.4"
-      - name: ".5.0"
-      - name: ".5.3"
-      - name: ".6.0"
-      - name: ".latest"
-      - name: ".kerberos"
       - name: "dist"
       - name: "sign"
         run_on: rhel80-small
       - name: "push"
         run_on: rhel80-small
+        git_tag_only: true
 
   - name: rhel80
-    display_name: RHEL 8.0
+    display_name: "# RHEL 8.0"
     run_on:
       - rhel80-test
     expansions:
@@ -2456,13 +2004,13 @@ buildvariants:
       resmoke_args: --jobs 4
     tasks:
       - name: "unit"
-      - name: ".3.6"
+      - name: "srv"
       - name: ".4.0"
       - name: ".4.2"
       - name: ".4.4"
       - name: ".5.0"
-      - name: ".5.3"
       - name: ".6.0"
+      - name: ".7.0"
       - name: ".latest"
       - name: ".kerberos"
       - name: "dist"
@@ -2470,38 +2018,31 @@ buildvariants:
         run_on: rhel80-small
       - name: "push"
         run_on: rhel80-small
+        git_tag_only: true
 
   - name: rhel90
     display_name: RHEL 9.0
     run_on:
       - rhel90-small
-    expansions:
-      <<:
-        [
-          *mongod_ssl_startup_args,
-          *mongo_ssl_startup_args,
-          *mongod_tls_startup_args,
-          *mongo_tls_startup_args,
-        ]
-      mongo_os: "rhel90"
-      mongo_edition: "enterprise"
-      smoke_use_ssl: --use-ssl
-      resmoke_use_ssl: _ssl
-      smoke_use_tls: --use-tls
-      resmoke_use_tls: _tls
-      edition: enterprise
-      run_kinit: true
-      resmoke_args: --jobs 4
     tasks:
-      - name: "unit"
-      #  - name: ".6.0"
-      #  - name: ".latest"
-      - name: ".kerberos"
       - name: "dist"
       - name: "sign"
         run_on: rhel80-small
       - name: "push"
         run_on: rhel80-small
+        git_tag_only: true
+
+  - name: amazon2023
+    display_name: Amazon Linux 2023
+    run_on:
+      - amazon2023-small
+    tasks:
+      - name: "dist"
+      - name: "sign"
+        run_on: rhel80-small
+      - name: "push"
+        run_on: rhel80-small
+        git_tag_only: true
 
   #######################################
   #     SUSE x86_64 Buildvariants       #
@@ -2513,74 +2054,25 @@ buildvariants:
     display_name: SUSE 12
     run_on:
       - suse12-sp5-small
-    expansions:
-      <<:
-        [
-          *mongod_ssl_startup_args,
-          *mongo_ssl_startup_args,
-          *mongod_tls_startup_args,
-          *mongo_tls_startup_args,
-        ]
-      mongo_os: "suse12"
-      mongo_edition: "enterprise"
-      smoke_use_ssl: --use-ssl
-      resmoke_use_ssl: _ssl
-      smoke_use_tls: --use-tls
-      resmoke_use_tls: _tls
-      edition: enterprise
-      run_kinit: true
-      resmoke_args: --jobs 4
     tasks:
-      - name: "unit"
-      - name: ".3.4"
-      - name: ".3.6"
-      - name: ".4.0"
-      - name: ".4.2"
-      - name: ".4.4"
-      - name: ".5.0"
-      - name: ".5.3"
-      - name: ".6.0"
-      - name: ".latest"
       - name: "dist"
       - name: "sign"
         run_on: rhel80-small
       - name: "push"
         run_on: rhel80-small
+        git_tag_only: true
 
   - name: suse15
     display_name: SUSE 15
     run_on:
-      - suse15sp2-small
-    expansions:
-      <<:
-        [
-          *mongod_ssl_startup_args,
-          *mongo_ssl_startup_args,
-          *mongod_tls_startup_args,
-          *mongo_tls_startup_args,
-        ]
-      mongo_os: "suse15"
-      mongo_edition: "enterprise"
-      smoke_use_ssl: --use-ssl
-      resmoke_use_ssl: _ssl
-      smoke_use_tls: --use-tls
-      resmoke_use_tls: _tls
-      edition: enterprise
-      run_kinit: true
-      resmoke_args: --jobs 4
+      - suse15sp4-small
     tasks:
-      - name: "unit"
-      - name: ".4.2"
-      - name: ".4.4"
-      - name: ".5.0"
-      - name: ".5.3"
-      - name: ".6.0"
-      - name: ".latest"
       - name: "dist"
       - name: "sign"
         run_on: rhel80-small
       - name: "push"
         run_on: rhel80-small
+        git_tag_only: true
 
   #######################################
   #    Ubuntu x86_64 Buildvariants      #
@@ -2590,148 +2082,56 @@ buildvariants:
     display_name: Ubuntu 16.04
     run_on:
       - ubuntu1604-test
-    expansions:
-      <<:
-        [
-          *mongod_ssl_startup_args,
-          *mongo_ssl_startup_args,
-          *mongod_tls_startup_args,
-          *mongo_tls_startup_args,
-        ]
-      mongo_os: "ubuntu1604"
-      mongo_edition: "enterprise"
-      smoke_use_ssl: --use-ssl
-      resmoke_use_ssl: _ssl
-      smoke_use_tls: --use-tls
-      resmoke_use_tls: _tls
-      edition: enterprise
-      run_kinit: true
-      resmoke_args: --jobs 4
     tasks:
-      - name: "unit"
-      - name: ".3.4"
-      - name: ".3.6"
-      - name: ".4.0"
-      - name: ".4.2"
-      - name: ".4.4"
-      - name: ".kerberos"
       - name: "dist"
       - name: "sign"
         run_on: rhel80-small
       - name: "push"
         run_on: rhel80-small
+        git_tag_only: true
 
   - name: ubuntu1804
     display_name: Ubuntu 18.04
     run_on:
       - ubuntu1804-test
-    expansions:
-      <<:
-        [
-          *mongod_ssl_startup_args,
-          *mongo_ssl_startup_args,
-          *mongod_tls_startup_args,
-          *mongo_tls_startup_args,
-        ]
-      mongo_os: "ubuntu1804"
-      mongo_edition: "enterprise"
-      smoke_use_ssl: --use-ssl
-      resmoke_use_ssl: _ssl
-      smoke_use_tls: --use-tls
-      resmoke_use_tls: _tls
-      edition: enterprise
-      run_kinit: true
-      resmoke_args: --jobs 4
     tasks:
-      - name: "unit"
-      - name: ".3.6"
-      - name: ".4.0"
-      - name: ".4.2"
-      - name: ".4.4"
-      - name: ".5.0"
-      - name: ".5.3"
-      - name: ".6.0"
-      - name: ".latest"
-      - name: ".kerberos"
       - name: "dist"
       - name: "sign"
         run_on: rhel80-small
       - name: "push"
         run_on: rhel80-small
+        git_tag_only: true
 
   - name: ubuntu2004
     display_name: Ubuntu 20.04
     run_on:
       - ubuntu2004-small
-    expansions:
-      <<:
-        [
-          *mongod_ssl_startup_args,
-          *mongo_ssl_startup_args,
-          *mongod_tls_startup_args,
-          *mongo_tls_startup_args,
-        ]
-      mongo_os: "ubuntu2004"
-      mongo_edition: "enterprise"
-      smoke_use_ssl: --use-ssl
-      resmoke_use_ssl: _ssl
-      smoke_use_tls: --use-tls
-      resmoke_use_tls: _tls
-      edition: enterprise
-      run_kinit: true
-      resmoke_args: --jobs 4
     tasks:
-      - name: "unit"
-      - name: ".4.4"
-      - name: ".5.0"
-      - name: ".5.3"
-      - name: ".6.0"
-      - name: ".latest"
-      - name: ".kerberos"
       - name: "dist"
       - name: "sign"
         run_on: rhel80-small
       - name: "push"
         run_on: rhel80-small
+        git_tag_only: true
 
   - name: ubuntu2204
     display_name: Ubuntu 22.04
     run_on:
       - ubuntu2204-small
-    expansions:
-      <<:
-        [
-          *mongod_ssl_startup_args,
-          *mongo_ssl_startup_args,
-          *mongod_tls_startup_args,
-          *mongo_tls_startup_args,
-        ]
-      mongo_os: "ubuntu2204"
-      mongo_edition: "enterprise"
-      smoke_use_ssl: --use-ssl
-      resmoke_use_ssl: _ssl
-      smoke_use_tls: --use-tls
-      resmoke_use_tls: _tls
-      edition: enterprise
-      run_kinit: true
-      resmoke_args: --jobs 4
     tasks:
-      - name: "unit"
-      #  - name: ".6.0"
-      #  - name: ".latest"
-      - name: ".kerberos"
       - name: "dist"
       - name: "sign"
         run_on: rhel80-small
       - name: "push"
         run_on: rhel80-small
+        git_tag_only: true
 
   #######################################
   #        Windows Buildvariants        #
   #######################################
 
   - name: windows
-    display_name: Windows 64-bit
+    display_name: "# Windows 64-bit"
     run_on:
       - windows-vsCurrent-large
     expansions:
@@ -2757,15 +2157,12 @@ buildvariants:
       USE_SSL: "true"
     tasks:
       - name: "unit"
-      - name: ".3.4"
-      # Disabled, see TOOLS-2662
-      # - name: ".3.6"
       - name: ".4.0"
       - name: ".4.2"
       - name: ".4.4"
       - name: ".5.0"
-      - name: ".5.3"
       - name: ".6.0"
+      - name: ".7.0"
       - name: ".latest"
       - name: ".kerberos"
       - name: "dist"
@@ -2773,6 +2170,7 @@ buildvariants:
         run_on: rhel80-small
       - name: "push"
         run_on: rhel80-small
+        git_tag_only: true
 
   #######################################
   #        ARM Buildvariants            #
@@ -2783,228 +2181,104 @@ buildvariants:
     run_on:
       - ubuntu1604-arm64
     stepback: false
-    expansions:
-      <<:
-        [
-          *mongod_ssl_startup_args,
-          *mongo_ssl_startup_args,
-          *mongod_tls_startup_args,
-          *mongo_tls_startup_args,
-        ]
-      mongo_os: "ubuntu1604"
-      mongo_edition: "enterprise"
-      mongo_arch: "arm64"
-      smoke_use_ssl: --use-ssl
-      resmoke_use_ssl: _ssl
-      smoke_use_tls: --use-tls
-      resmoke_use_tls: _tls
-      excludes: requires_mmap_available,requires_large_ram,requires_mongo_24,requires_mongo_26,requires_mongo_30
-      resmoke_args: -j 2
-      edition: "enterprise"
-      USE_SSL: "true"
     tasks:
-      - name: "unit"
-      - name: ".3.4 !.mmap"
-      - name: ".3.6 !.mmap"
-      - name: ".4.0 !.mmap"
-      - name: ".4.2"
-      - name: ".4.4"
-      - name: ".kerberos"
       - name: "dist"
       - name: "sign"
         run_on: rhel80-small
       - name: "push"
         run_on: rhel80-small
+        git_tag_only: true
 
   - name: ubuntu1804-arm64
     display_name: ZAP ARM64 Ubuntu 18.04
     run_on:
       - ubuntu1804-arm64
     stepback: false
-    expansions:
-      <<:
-        [
-          *mongod_ssl_startup_args,
-          *mongo_ssl_startup_args,
-          *mongod_tls_startup_args,
-          *mongo_tls_startup_args,
-        ]
-      mongo_os: "ubuntu1804"
-      mongo_edition: "enterprise"
-      mongo_arch: "aarch64"
-      smoke_use_ssl: --use-ssl
-      resmoke_use_ssl: _ssl
-      smoke_use_tls: --use-tls
-      resmoke_use_tls: _tls
-      excludes: requires_mmap_available,requires_large_ram,requires_mongo_24,requires_mongo_26,requires_mongo_30
-      resmoke_args: -j 2
-      edition: "enterprise"
-      USE_SSL: "true"
     tasks:
-      - name: "unit"
-      - name: ".4.2"
-      - name: ".4.4"
-      - name: ".5.0"
-      - name: ".5.3"
-      - name: ".6.0"
-      - name: ".latest"
-      - name: ".kerberos"
       - name: "dist"
       - name: "sign"
         run_on: rhel80-small
       - name: "push"
         run_on: rhel80-small
+        git_tag_only: true
 
-  # MongoDB 4.4+
   - name: ubuntu2004-arm64
     display_name: ZAP ARM64 Ubuntu 20.04
     run_on:
       - ubuntu2004-arm64
     stepback: false
-    expansions:
-      <<:
-        [
-          *mongod_ssl_startup_args,
-          *mongo_ssl_startup_args,
-          *mongod_tls_startup_args,
-          *mongo_tls_startup_args,
-        ]
-      mongo_os: "ubuntu2004"
-      mongo_edition: "enterprise"
-      mongo_arch: "aarch64"
-      smoke_use_ssl: --use-ssl
-      resmoke_use_ssl: _ssl
-      smoke_use_tls: --use-tls
-      resmoke_use_tls: _tls
-      excludes: requires_mmap_available,requires_large_ram,requires_mongo_24,requires_mongo_26,requires_mongo_30
-      resmoke_args: -j 2
-      edition: "enterprise"
-      USE_SSL: "true"
     tasks:
-      - name: "unit"
-      - name: ".4.4"
-      - name: ".5.0"
-      - name: ".5.3"
-      - name: ".6.0"
-      - name: ".latest"
-      - name: ".kerberos"
       - name: "dist"
       - name: "sign"
         run_on: rhel80-small
       - name: "push"
         run_on: rhel80-small
+        git_tag_only: true
 
   - name: ubuntu2204-arm64
     display_name: ZAP ARM64 Ubuntu 22.04
     run_on:
       - ubuntu2204-arm64-small
     stepback: false
-    expansions:
-      <<:
-        [
-          *mongod_ssl_startup_args,
-          *mongo_ssl_startup_args,
-          *mongod_tls_startup_args,
-          *mongo_tls_startup_args,
-        ]
-      mongo_os: "ubuntu2204"
-      mongo_edition: "enterprise"
-      mongo_arch: "aarch64"
-      smoke_use_ssl: --use-ssl
-      resmoke_use_ssl: _ssl
-      smoke_use_tls: --use-tls
-      resmoke_use_tls: _tls
-      excludes: requires_mmap_available,requires_large_ram,requires_mongo_24,requires_mongo_26,requires_mongo_30
-      resmoke_args: -j 2
-      edition: "enterprise"
-      USE_SSL: "true"
     tasks:
-      - name: "unit"
-      #  - name: ".6.0"
-      #  - name: ".latest"
-      - name: ".kerberos"
       - name: "dist"
       - name: "sign"
         run_on: rhel80-small
       - name: "push"
         run_on: rhel80-small
+        git_tag_only: true
 
   - name: amazon2-aarch64
     display_name: Amazon Linux ARM v2
     run_on:
       - amazon2-arm64-small
     stepback: false
-    expansions:
-      <<:
-        [
-          *mongod_ssl_startup_args,
-          *mongo_ssl_startup_args,
-          *mongod_tls_startup_args,
-          *mongo_tls_startup_args,
-        ]
-      mongo_os: "amazon2"
-      mongo_edition: "enterprise"
-      mongo_arch: "aarch64"
-      smoke_use_ssl: --use-ssl
-      resmoke_use_ssl: _ssl
-      smoke_use_tls: --use-tls
-      resmoke_use_tls: _tls
-      excludes: requires_mmap_available,requires_large_ram,requires_mongo_24,requires_mongo_26,requires_mongo_30
-      resmoke_args: -j 2
-      edition: "enterprise"
-      USE_SSL: "true"
     tasks:
-      - name: "unit"
-      - name: ".4.2"
-      - name: ".4.4"
-      - name: ".5.0"
-      - name: ".5.3"
-      - name: ".6.0"
-      - name: ".latest"
-      - name: ".kerberos"
       - name: "dist"
       - name: "sign"
         run_on: rhel80-small
       - name: "push"
         run_on: rhel80-small
+        git_tag_only: true
 
-  - name: rhel82-arm64
+  - name: amazon2023-aarch64
+    display_name: Amazon Linux 2023 ARM
+    run_on:
+      - amazon2023-arm64-small
+    stepback: false
+    tasks:
+      - name: "dist"
+      - name: "sign"
+        run_on: rhel80-small
+      - name: "push"
+        run_on: rhel80-small
+        git_tag_only: true
+
+  - name: rhel82-aarch64
     display_name: RHEL 8.2 ARM
     run_on:
       - rhel82-arm64
     stepback: false
-    expansions:
-      <<:
-        [
-          *mongod_ssl_startup_args,
-          *mongo_ssl_startup_args,
-          *mongod_tls_startup_args,
-          *mongo_tls_startup_args,
-        ]
-      mongo_os: "rhel82"
-      mongo_edition: "enterprise"
-      mongo_arch: "aarch64"
-      smoke_use_ssl: --use-ssl
-      resmoke_use_ssl: _ssl
-      smoke_use_tls: --use-tls
-      resmoke_use_tls: _tls
-      excludes: requires_mmap_available,requires_large_ram,requires_mongo_24,requires_mongo_26,requires_mongo_30
-      resmoke_args: -j 2
-      edition: "enterprise"
-      USE_SSL: "true"
     tasks:
-      - name: "unit"
-      - name: ".4.4"
-      - name: ".5.0"
-      - name: ".5.3"
-      - name: ".6.0"
-      - name: ".latest"
-      - name: ".kerberos"
       - name: "dist"
       - name: "sign"
         run_on: rhel80-small
       - name: "push"
         run_on: rhel80-small
+        git_tag_only: true
+
+  - name: rhel90-aarch64
+    display_name: RHEL 9.0 ARM
+    run_on:
+      - rhel90-arm64-small
+    stepback: false
+    tasks:
+      - name: "dist"
+      - name: "sign"
+        run_on: rhel80-small
+      - name: "push"
+        run_on: rhel80-small
+        git_tag_only: true
 
   #######################################
   #        Power Buildvariants          #
@@ -3015,148 +2289,26 @@ buildvariants:
     run_on:
       - rhel71-power8
     stepback: false
-    expansions:
-      <<:
-        [
-          *mongod_ssl_startup_args,
-          *mongo_ssl_startup_args,
-          *mongod_tls_startup_args,
-          *mongo_tls_startup_args,
-        ]
-      mongo_os: "rhel71"
-      mongo_edition: "enterprise"
-      mongo_arch: "ppc64le"
-      smoke_use_ssl: --use-ssl
-      resmoke_use_ssl: _ssl
-      smoke_use_tls: --use-tls
-      resmoke_use_tls: _tls
-      resmoke_args: -j 4
-      excludes: requires_mmap_available,requires_large_ram,requires_mongo_24,requires_mongo_26,requires_mongo_30
-      edition: enterprise
-      run_kinit: true
     tasks:
-      - name: "unit"
-      - name: ".3.4 !.mmap"
-      - name: ".3.6 !.mmap"
-      - name: ".4.0 !.mmap"
-      - name: ".4.2"
-      - name: ".4.4"
-      - name: ".kerberos"
       - name: "dist"
       - name: "sign"
         run_on: rhel80-small
       - name: "push"
         run_on: rhel80-small
+        git_tag_only: true
 
   - name: rhel81-ppc64le
     display_name: ZAP PPC64LE RHEL 8.1
     run_on:
       - rhel81-power8
     stepback: false
-    expansions:
-      <<:
-        [
-          *mongod_ssl_startup_args,
-          *mongo_ssl_startup_args,
-          *mongod_tls_startup_args,
-          *mongo_tls_startup_args,
-        ]
-      mongo_os: "rhel81"
-      mongo_edition: "enterprise"
-      mongo_arch: "ppc64le"
-      smoke_use_ssl: --use-ssl
-      resmoke_use_ssl: _ssl
-      smoke_use_tls: --use-tls
-      resmoke_use_tls: _tls
-      resmoke_args: -j 4
-      excludes: requires_mmap_available,requires_large_ram,requires_mongo_24,requires_mongo_26,requires_mongo_30
-      edition: enterprise
-      run_kinit: true
     tasks:
-      - name: "unit"
-      - name: ".4.2"
-      # Skipping aws-auth, see TOOLS-3015
-      - name: ".4.4 !.aws-auth"
-      - name: ".5.0 !.aws-auth"
-      - name: ".5.3 !.aws-auth"
-      - name: ".6.0 !.aws-auth"
-      - name: ".latest !.aws-auth"
-      - name: ".kerberos"
       - name: "dist"
       - name: "sign"
         run_on: rhel80-small
       - name: "push"
         run_on: rhel80-small
-
-  # MongoDB 4.0
-  - name: ubuntu1604-ppc64le
-    display_name: ZAP PPC64LE Ubuntu 16.04
-    run_on:
-      - ubuntu1604-power8
-    stepback: false
-    expansions:
-      <<:
-        [
-          *mongod_ssl_startup_args,
-          *mongo_ssl_startup_args,
-          *mongod_tls_startup_args,
-          *mongo_tls_startup_args,
-        ]
-      mongo_os: "ubuntu1604"
-      mongo_edition: "enterprise"
-      mongo_arch: "ppc64le"
-      smoke_use_ssl: --use-ssl
-      resmoke_use_ssl: _ssl
-      smoke_use_tls: --use-tls
-      resmoke_use_tls: _tls
-      resmoke_args: -j 4
-      excludes: requires_mmap_available,requires_large_ram,requires_mongo_24,requires_mongo_26,requires_mongo_30
-      edition: enterprise
-      run_kinit: true
-    tasks:
-      - name: "unit"
-      - name: ".4.0 !.mmap"
-      - name: "dist"
-      - name: "sign"
-        run_on: rhel80-small
-      - name: "push"
-        run_on: rhel80-small
-
-  # MongoDB 4.2+
-  - name: ubuntu1804-ppc64le
-    display_name: ZAP PPC64LE Ubuntu 18.04
-    run_on:
-      - ubuntu1804-power8
-    stepback: false
-    expansions:
-      <<:
-        [
-          *mongod_ssl_startup_args,
-          *mongo_ssl_startup_args,
-          *mongod_tls_startup_args,
-          *mongo_tls_startup_args,
-        ]
-      mongo_os: "ubuntu1804"
-      mongo_edition: "enterprise"
-      mongo_arch: "ppc64le"
-      smoke_use_ssl: --use-ssl
-      resmoke_use_ssl: _ssl
-      smoke_use_tls: --use-tls
-      resmoke_use_tls: _tls
-      resmoke_args: -j 4
-      excludes: requires_mmap_available,requires_large_ram,requires_mongo_24,requires_mongo_26,requires_mongo_30
-      edition: enterprise
-      run_kinit: true
-    tasks:
-      - name: "unit"
-      - name: ".4.2"
-      - name: ".4.4"
-      - name: ".kerberos"
-      - name: "dist"
-      - name: "sign"
-        run_on: rhel80-small
-      - name: "push"
-        run_on: rhel80-small
+        git_tag_only: true
 
   #######################################
   #     Z (s390x) Buildvariants         #
@@ -3167,107 +2319,26 @@ buildvariants:
     run_on:
       - rhel72-zseries
     stepback: false
-    expansions:
-      <<:
-        [
-          *mongod_ssl_startup_args,
-          *mongo_ssl_startup_args,
-          *mongod_tls_startup_args,
-          *mongo_tls_startup_args,
-        ]
-      mongo_os: "rhel72"
-      mongo_edition: "enterprise"
-      mongo_arch: "s390x"
-      smoke_use_ssl: --use-ssl
-      resmoke_use_ssl: _ssl
-      smoke_use_tls: --use-tls
-      resmoke_use_tls: _tls
-      excludes: requires_mmap_available,requires_mongo_24,requires_mongo_26,requires_mongo_30
-      resmoke_args: -j 2
-      edition: enterprise
-      run_kinit: true
     tasks:
-      - name: "unit"
-      - name: ".4.4"
-      - name: ".5.0"
-      # We did not do a release of 5.3 for RHEL 7.2 on s390x. There should be a
-      # 6.x release in the future, but there is no 6.0.
-      - name: ".5.1"
-      - name: ".5.2"
-      - name: ".latest"
-      - name: ".kerberos"
       - name: "dist"
       - name: "sign"
         run_on: rhel80-small
       - name: "push"
         run_on: rhel80-small
+        git_tag_only: true
 
   - name: rhel83-s390x
     display_name: ZAP s390x RHEL 8.3
     run_on:
       - rhel83-zseries
     stepback: false
-    expansions:
-      <<:
-        [
-          *mongod_ssl_startup_args,
-          *mongo_ssl_startup_args,
-          *mongod_tls_startup_args,
-          *mongo_tls_startup_args,
-        ]
-      mongo_os: "rhel83"
-      mongo_edition: "enterprise"
-      mongo_arch: "s390x"
-      smoke_use_ssl: --use-ssl
-      resmoke_use_ssl: _ssl
-      smoke_use_tls: --use-tls
-      resmoke_use_tls: _tls
-      excludes: requires_mmap_available,requires_mongo_24,requires_mongo_26,requires_mongo_30
-      resmoke_args: -j 2
-      edition: enterprise
-      run_kinit: true
     tasks:
-      - name: "unit"
-      # We only have 5.0.x and 6+ releases for RHEL 8.x on s390x
-      - name: ".5.0"
-      #  - name: ".latest"
-      - name: ".kerberos"
       - name: "dist"
       - name: "sign"
         run_on: rhel80-small
       - name: "push"
         run_on: rhel80-small
-
-  #######################################
-  #     Experimental Buildvariants      #
-  #######################################
-
-  - name: ubuntu-race
-    stepback: false
-    display_name: ~ Race Detector Ubuntu 18.04
-    run_on:
-      - ubuntu1804-small
-    expansions:
-      <<:
-        [
-          *mongod_ssl_startup_args,
-          *mongo_ssl_startup_args,
-          *mongod_tls_startup_args,
-          *mongo_tls_startup_args,
-        ]
-      mongo_os: "ubuntu1804"
-      mongo_edition: "enterprise"
-      args: "-buildmode=default -race"
-      excludes: requires_large_ram
-      resmoke_use_tls: _tls
-      resmoke_use_ssl: _ssl
-      USE_SSL: "true"
-    tasks:
-      - name: "unit"
-      - name: ".3.6"
-      - name: ".4.0"
-      - name: ".4.2"
-      - name: ".4.4"
+        git_tag_only: true
 
 # These aliases are generated by running `go run ./evergreen/generator` from
 # the repo root. Do not edit them directly!
@@ -3285,16 +2356,24 @@ github_pr_aliases:
   # a relatively recent platform that supports a wide range of servers.
   - variant: "rhel80"
     task: "^(aws-auth|integration|native-cert-ssl|qa-dump-restore|qa-tests)-.*"
+  # Run srv tests on one variant. We pick RHEL 8.0 because it's a relatively
+  # recent platform that supports a wide range of servers.
+  - variant: "rhel80"
+    task: "^srv*"
   # RHEL 8.0 doesn't run against server 3.4, so we do that with RHEL 7.0.
   - variant: "rhel70"
     task: "^(aws-auth|integration|native-cert-ssl|qa-dump-restore|qa-tests)-3.4$"
   # Run a subset of integration tests against the 3.4 version of MongoDB
   # Server on all variants where that is the most recent supported version.
-  - variant: "^(amazon|debian81|macos|rhel62|ubuntu1604)$"
+  - variant: "^(amazon|debian81|rhel62|ubuntu1604)$"
     task: "integration-3.4"
+  # Run a subset of integration tests against the 3.6 version of MongoDB
+  # Server on all variants where that is the most recent supported version.
+  - variant: "^macos$"
+    task: "integration-3.6"
   # Run a subset of integration tests against the 4.2 version of MongoDB
   # Server on all variants where that is the most recent supported version.
-  - variant: "^(rhel71-ppc64le|rhel81-ppc64le|ubuntu1604-arm64|ubuntu1804-ppc64le)$"
+  - variant: "^(rhel71-ppc64le|rhel81-ppc64le|ubuntu1604-arm64)$"
     task: "integration-4.2"
   # Run a subset of integration tests against the 4.4 version of MongoDB
   # Server on all variants where that is the most recent supported version.
@@ -3306,5 +2385,5 @@ github_pr_aliases:
     task: "integration-5.0"
   # Run a subset of integration tests against the latest version of MongoDB
   # Server on all variants where that is the most recent supported version.
-  - variant: "^(amazon2|amazon2-arm64|debian10|debian11|debian92|rhel70|rhel72-s390x|rhel80|rhel82-arm64|suse12|suse15|ubuntu1804|ubuntu1804-arm64|ubuntu2004|ubuntu2004-arm64|windows)$"
+  - variant: "^(amazon2|amazon2-aarch64|debian10|debian11|debian12|debian92|rhel70|rhel72-s390x|rhel80|rhel82-aarch64|suse12|suse15|ubuntu1804|ubuntu1804-arm64|ubuntu2004|ubuntu2004-arm64|windows)$"
     task: "integration-latest"

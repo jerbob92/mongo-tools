@@ -49,6 +49,24 @@ const (
 	specialCharactersCollectionName = "cafés"
 )
 
+var testDocument = bson.M{"key": "value"}
+
+var configCollectionNamesToKeep = []string{
+	"chunks",
+	"collections",
+	"databases",
+	"settings",
+	"shards",
+	"tags",
+	"version",
+}
+
+var userDefinedConfigCollectionNames = []string{
+	"coll1",
+	"coll2",
+	"coll3",
+}
+
 func init() {
 	// bump up the verbosity to make checking debug log output possible
 	log.SetVerbosity(&options.Verbosity{
@@ -99,7 +117,7 @@ func TestDeprecatedDBAndCollectionOptions(t *testing.T) {
 
 			restore, err := getRestoreWithArgs(args...)
 			if err != nil {
-				t.Errorf("Cannot bootstrap test harness: %v", err.Error())
+				t.Fatalf("Cannot bootstrap test harness: %v", err.Error())
 			}
 			defer restore.Close()
 
@@ -118,7 +136,7 @@ func TestDeprecatedDBAndCollectionOptions(t *testing.T) {
 
 			restore, err := getRestoreWithArgs(args...)
 			if err != nil {
-				t.Errorf("Cannot bootstrap test harness: %v", err.Error())
+				t.Fatalf("Cannot bootstrap test harness: %v", err.Error())
 			}
 			defer restore.Close()
 
@@ -466,35 +484,6 @@ func TestMongorestoreLongCollectionName(t *testing.T) {
 			So(err, ShouldBeNil)
 			So(count, ShouldEqual, 1)
 		})
-	})
-}
-
-func TestMongorestoreCantPreserveUUID(t *testing.T) {
-	testtype.SkipUnlessTestType(t, testtype.IntegrationTestType)
-	session, err := testutil.GetBareSession()
-	if err != nil {
-		t.Fatalf("No server available")
-	}
-	fcv := testutil.GetFCV(session)
-	if cmp, err := testutil.CompareFCV(fcv, "3.6"); err != nil || cmp >= 0 {
-		t.Skip("Requires server with FCV less than 3.6")
-	}
-
-	Convey("PreserveUUID restore with incompatible destination FCV errors", t, func() {
-		args := []string{
-			NumParallelCollectionsOption, "1",
-			NumInsertionWorkersOption, "1",
-			PreserveUUIDOption,
-			DropOption,
-			"testdata/oplogdump",
-		}
-		restore, err := getRestoreWithArgs(args...)
-		So(err, ShouldBeNil)
-		defer restore.Close()
-
-		result := restore.Restore()
-		So(result.Err, ShouldNotBeNil)
-		So(result.Err.Error(), ShouldContainSubstring, "target host does not support --preserveUUID")
 	})
 }
 
@@ -1999,7 +1988,13 @@ func TestRestoreTimeseriesCollections(t *testing.T) {
 				numIndexes++
 			}
 
-			So(numIndexes, ShouldEqual, 0)
+			if (restore.serverVersion.GTE(db.Version{6, 3, 0})) {
+				Convey("--noIndexRestore should build the index on meta, time by default for time-series collections if server version >= 6.3.0", func() {
+					So(numIndexes, ShouldEqual, 1)
+				})
+			} else {
+				So(numIndexes, ShouldEqual, 0)
+			}
 
 			cur, err := testdb.ListCollections(ctx, bson.M{"name": "system.buckets.foo_ts"})
 			So(err, ShouldBeNil)
@@ -2086,6 +2081,8 @@ func TestRestoreTimeseriesCollections(t *testing.T) {
 type indexInfo struct {
 	name string
 	keys []string
+	// columnstoreProjection contains info about columnstoreProjection key in columnstore indexes.
+	columnstoreProjection map[string]int32
 }
 
 func TestRestoreClusteredIndex(t *testing.T) {
@@ -2137,7 +2134,7 @@ func testRestoreClusteredIndexFromDump(t *testing.T, indexName string) {
 
 	dataLen := createClusteredIndex(t, testDB, indexName)
 
-	withMongodump(t, testDB.Name(), "stocks", func(dir string) {
+	withBSONMongodumpForCollection(t, testDB.Name(), "stocks", func(dir string) {
 		restore, err := getRestoreWithArgs(
 			DropOption,
 			dir,
@@ -2283,10 +2280,20 @@ func clusteredIndexInfo(t *testing.T, options bson.M) indexInfo {
 	}
 }
 
-func withMongodump(t *testing.T, db string, collection string, testCase func(string)) {
+func withBSONMongodump(t *testing.T, testCase func(string), args ...string) {
 	dir, cleanup := testutil.MakeTempDir(t)
 	defer cleanup()
-	runMongodump(t, dir, db, collection)
+	dirArgs := []string{
+		"--out", dir,
+	}
+	runMongodumpWithArgs(t, append(dirArgs, args...)...)
+	testCase(dir)
+}
+
+func withBSONMongodumpForCollection(t *testing.T, db string, collection string, testCase func(string)) {
+	dir, cleanup := testutil.MakeTempDir(t)
+	defer cleanup()
+	runBSONMongodumpForCollection(t, dir, db, collection)
 	testCase(dir)
 }
 
@@ -2309,7 +2316,7 @@ func withOplogMongoDump(t *testing.T, db string, collection string, testCase fun
 	require.NoError(err, "can marshal query to JSON")
 
 	// We dump just the documents matching the query using mongodump "normally".
-	bsonFile := runMongodump(t, dir, "local", "oplog.rs", "--query", string(q))
+	bsonFile := runBSONMongodumpForCollection(t, dir, "local", "oplog.rs", "--query", string(q))
 
 	// Then we take the BSON dump file and rename it to "oplog.bson" and put
 	// it in the root of the dump directory.
@@ -2334,17 +2341,29 @@ func withOplogMongoDump(t *testing.T, db string, collection string, testCase fun
 	testCase(dir)
 }
 
-func runMongodump(t *testing.T, dir, db, collection string, args ...string) string {
+func runBSONMongodumpForCollection(t *testing.T, dir, db, collection string, args ...string) string {
 	require := require.New(t)
-
-	cmd := []string{"go", "run", filepath.Join("..", "mongodump", "main")}
-	cmd = append(cmd, testutil.GetBareArgs()...)
-	cmd = append(
-		cmd,
+	baseArgs := []string{
 		"--out", dir,
 		"--db", db,
 		"--collection", collection,
+	}
+	runMongodumpWithArgs(
+		t,
+		append(baseArgs, args...)...,
 	)
+	bsonFile := filepath.Join(dir, db, fmt.Sprintf("%s.bson", collection))
+	_, err := os.Stat(bsonFile)
+	require.NoError(err, "dump created BSON data file")
+	_, err = os.Stat(filepath.Join(dir, db, fmt.Sprintf("%s.metadata.json", collection)))
+	require.NoError(err, "dump created JSON metadata file")
+	return bsonFile
+}
+
+func runMongodumpWithArgs(t *testing.T, args ...string) {
+	require := require.New(t)
+	cmd := []string{"go", "run", filepath.Join("..", "mongodump", "main")}
+	cmd = append(cmd, testutil.GetBareArgs()...)
 	cmd = append(cmd, args...)
 	out, err := exec.Command(cmd[0], cmd[1:]...).CombinedOutput()
 	cmdStr := strings.Join(cmd, " ")
@@ -2355,16 +2374,356 @@ func runMongodump(t *testing.T, dir, db, collection string, args ...string) stri
 		"running [%s] does not tell us the the namespace does not exist",
 		cmdStr,
 	)
-
-	bsonFile := filepath.Join(dir, db, fmt.Sprintf("%s.bson", collection))
-	_, err = os.Stat(bsonFile)
-	require.NoError(err, "dump created BSON data file")
-	_, err = os.Stat(filepath.Join(dir, db, fmt.Sprintf("%s.metadata.json", collection)))
-	require.NoError(err, "dump created JSON metadata file")
-
-	return bsonFile
 }
 
 func uniqueDBName() string {
 	return fmt.Sprintf("mongorestore_test_%d_%d", os.Getpid(), time.Now().UnixMilli())
+}
+
+// TestRestoreColumnstoreIndex tests restoring Columnstore Indexes in restored collections.
+func TestRestoreColumnstoreIndex(t *testing.T) {
+	require := require.New(t)
+
+	testtype.SkipUnlessTestType(t, testtype.IntegrationTestType)
+
+	session, err := testutil.GetBareSession()
+	require.NoError(err, "can connect to server")
+
+	fcv := testutil.GetFCV(session)
+	if cmp, err := testutil.CompareFCV(fcv, "6.3"); err != nil || cmp < 0 {
+		t.Skipf("Requires server with FCV 6.3 or later and we have %s", fcv)
+	}
+
+	t.Run("restore from dump", func(t *testing.T) {
+		testRestoreColumnstoreIndexFromDump(t)
+	})
+
+	res := session.Database("admin").RunCommand(context.Background(), bson.M{"replSetGetStatus": 1})
+	if res.Err() != nil {
+		t.Skip("server is not part of a replicaset so we cannot test restore from oplog")
+	}
+	t.Run("restore from oplog", func(t *testing.T) {
+		testRestoreColumnstoreIndexFromOplog(t)
+	})
+}
+
+// testRestoreColumnstoreIndexFromDump tests restoring Columnstore Indexes from dump files.
+func testRestoreColumnstoreIndexFromDump(t *testing.T) {
+	require := require.New(t)
+
+	session, err := testutil.GetBareSession()
+	require.NoError(err, "can connect to server")
+
+	dbName := uniqueDBName()
+	testDB := session.Database(dbName)
+	defer func() {
+		err = testDB.Drop(nil)
+		if err != nil {
+			t.Fatalf("Failed to drop test database: %v", err)
+		}
+	}()
+
+	key := "$**"
+	columnstoreProjection := map[string]int32{"price": 1}
+	dataLen := createColumnstoreIndex(t, testDB, key, columnstoreProjection)
+
+	withBSONMongodumpForCollection(t, testDB.Name(), "stocks", func(dir string) {
+		restore, err := getRestoreWithArgs(
+			DropOption,
+			dir,
+		)
+		require.NoError(err)
+		defer restore.Close()
+
+		result := restore.Restore()
+		require.NoError(result.Err, "can run mongorestore")
+		require.EqualValues(dataLen, result.Successes, "mongorestore reports %d successes", dataLen)
+		require.EqualValues(0, result.Failures, "mongorestore reports 0 failures")
+
+		assertColumnstoreIndex(t, testDB, key, columnstoreProjection)
+	})
+}
+
+// createColumnstoreIndex creates a collection with a Columnstore Index in testDB.
+// The created Columnstore Index has key and columnstoreProjection specified in the function argument.
+func createColumnstoreIndex(t *testing.T, testDB *mongo.Database, key string, columnstoreProjection map[string]int32) int {
+	require := require.New(t)
+
+	createCollCmd := bson.D{
+		{Key: "create", Value: "stocks"},
+	}
+	res := testDB.RunCommand(context.Background(), createCollCmd, nil)
+	require.NoError(res.Err(), "can create a collection")
+
+	fmt.Printf("creating index in %s db\n", testDB.Name())
+	indexOpts := bson.M{
+		"key":                   bson.D{{key, "columnstore"}},
+		"columnstoreProjection": columnstoreProjection,
+		"name":                  "columnstore_index_test",
+	}
+
+	createIndexCmd := bson.D{
+		{"createIndexes", "stocks"},
+		{"indexes", bson.A{
+			indexOpts,
+		}},
+	}
+	res = testDB.RunCommand(context.Background(), createIndexCmd, nil)
+	if strings.Contains(res.Err().Error(), "(NotImplemented) columnstore indexes are under development and cannot be used without enabling the feature flag") {
+		t.Skip("Requires columnstore indexes to be implemented")
+	}
+
+	require.NoError(res.Err(), "can create a columnstore index")
+
+	var r interface{}
+	err := res.Decode(&r)
+	require.NoError(err)
+
+	stocks := testDB.Collection("stocks")
+	stockData := []interface{}{
+		bson.M{"ticker": "MDB", "price": 245.33},
+		bson.M{"ticker": "GOOG", "price": 2214.91},
+		bson.M{"ticker": "BLZE", "price": 6.23},
+	}
+	_, err = stocks.InsertMany(context.Background(), stockData)
+	require.NoError(err, "can insert documents into collection")
+
+	return len(stockData)
+}
+
+// assertColumnstoreIndex asserts the "stock" collection in testDB has a Columnstore Index with the expected key and the expected columnstoreProjection field.
+func assertColumnstoreIndex(t *testing.T, testDB *mongo.Database, expectedKey string, expectedColumnstoreProjection map[string]int32) {
+	require := require.New(t)
+
+	c, err := testDB.ListCollections(context.Background(), bson.M{})
+	require.NoError(err, "can get list of collections")
+
+	type collectionRes struct {
+		Name    string
+		Type    string
+		Options bson.M
+		Info    bson.D
+		IdIndex bson.D
+	}
+
+	var collections []collectionRes
+
+	for c.Next(context.Background()) {
+		var res collectionRes
+		err = c.Decode(&res)
+		require.NoError(err, "can decode collection result")
+		collections = append(collections, res)
+	}
+
+	require.Len(collections, 1, "database has one collection")
+	require.Equal("stocks", collections[0].Name, "collection is named stocks")
+	idx := columnstoreIndexInfo(t, testDB.Collection(collections[0].Name))
+	require.Equal(expectedKey, idx.keys[0], "columnstore index key is the expected key")
+	require.Equal(expectedColumnstoreProjection, idx.columnstoreProjection, "columnstoreProjection is expected")
+}
+
+// columnstoreIndexInfo collects info about the Columnstore Index from the test collection.
+// columnstoreIndexInfo returns non-empty indexInfo with the name, keys, and columnstoreProjection of a Columnstore Index if present in the collection.
+func columnstoreIndexInfo(t *testing.T, collection *mongo.Collection) indexInfo {
+	c, err := collection.Indexes().List(context.Background())
+	require.NoError(t, err, "can list indexes")
+
+	type indexRes struct {
+		Name                  string
+		Key                   bson.D
+		ColumnstoreProjection bson.M
+	}
+
+	var columnstoreIndexInfo *indexInfo
+	for c.Next(context.Background()) {
+		isColumnstore := false
+		var res indexRes
+		err = c.Decode(&res)
+		require.NoError(t, err, "can decode index")
+		require.Equal(t, 1, len(res.Key), "has one index key")
+
+		// Find the key "columnstore".
+		for _, keyVal := range res.Key {
+			if keyVal.Value == "columnstore" {
+				isColumnstore = true
+			}
+		}
+
+		if isColumnstore {
+			var keyNames []string
+			for _, keyVal := range res.Key {
+				keyNames = append(keyNames, keyVal.Key)
+			}
+
+			columnstoreProjectionMap := map[string]int32{}
+			for key, val := range res.ColumnstoreProjection {
+				columnstoreProjectionMap[key] = val.(int32)
+			}
+
+			columnstoreIndexInfo = &indexInfo{
+				name:                  res.Name,
+				keys:                  keyNames,
+				columnstoreProjection: columnstoreProjectionMap,
+			}
+		}
+	}
+	require.NotNil(t, columnstoreIndexInfo, "found columnstore index info")
+	return *columnstoreIndexInfo
+}
+
+// testRestoreColumnstoreIndexFromDump tests restoring Columnstore Indexes from oplog replay.
+func testRestoreColumnstoreIndexFromOplog(t *testing.T) {
+	require := require.New(t)
+
+	session, err := testutil.GetBareSession()
+	require.NoError(err, "can connect to server")
+
+	dbName := uniqueDBName()
+	testDB := session.Database(dbName)
+	defer func() {
+		err = testDB.Drop(nil)
+		if err != nil {
+			t.Fatalf("Failed to drop test database: %v", err)
+		}
+	}()
+
+	key := "$**"
+	columnstoreProjection := map[string]int32{"price": 1}
+	createColumnstoreIndex(t, testDB, key, columnstoreProjection)
+
+	withOplogMongoDump(t, dbName, "stocks", func(dir string) {
+		restore, err := getRestoreWithArgs(
+			DropOption,
+			OplogReplayOption,
+			dir,
+		)
+		require.NoError(err)
+		defer restore.Close()
+
+		result := restore.Restore()
+		require.NoError(result.Err, "can run mongorestore")
+		require.EqualValues(0, result.Successes, "mongorestore reports 0 successes")
+		require.EqualValues(0, result.Failures, "mongorestore reports 0 failures")
+
+		assertColumnstoreIndex(t, testDB, key, columnstoreProjection)
+	})
+}
+
+func TestDumpAndRestoreConfigDB(t *testing.T) {
+	require := require.New(t)
+
+	testtype.SkipUnlessTestType(t, testtype.IntegrationTestType)
+
+	_, err := testutil.GetBareSession()
+	require.NoError(err, "can connect to server")
+
+	t.Run("test dump and restore only config db includes all config collections", func(t *testing.T) {
+		testDumpAndRestoreConfigDBIncludesAllCollections(t)
+	})
+
+	t.Run("test dump and restore all dbs includes only some config collections", func(t *testing.T) {
+		testDumpAndRestoreAllDBsIgnoresSomeConfigCollections(t)
+	})
+}
+
+func testDumpAndRestoreConfigDBIncludesAllCollections(t *testing.T) {
+	require := require.New(t)
+
+	session, err := testutil.GetBareSession()
+	require.NoError(err, "can connect to server")
+
+	configDB := session.Database("config")
+
+	collections := createCollectionsWithTestDocuments(
+		t,
+		configDB,
+		append(configCollectionNamesToKeep, userDefinedConfigCollectionNames...),
+	)
+	defer clearDB(t, configDB)
+
+	withBSONMongodump(
+		t,
+		func(dir string) {
+
+			clearDB(t, configDB)
+
+			restore, err := getRestoreWithArgs(dir)
+			require.NoError(err)
+			defer restore.Close()
+
+			result := restore.Restore()
+			require.NoError(result.Err, "can run mongorestore")
+			require.EqualValues(0, result.Failures, "mongorestore reports 0 failures")
+
+			for _, collection := range collections {
+				r := collection.FindOne(context.Background(), testDocument)
+				require.NoError(r.Err(), "expected document")
+			}
+
+		},
+		"--db", "config",
+		"--excludeCollection", "transactions",
+	)
+}
+
+func testDumpAndRestoreAllDBsIgnoresSomeConfigCollections(t *testing.T) {
+	require := require.New(t)
+
+	session, err := testutil.GetBareSession()
+	require.NoError(err, "can connect to server")
+
+	configDB := session.Database("config")
+
+	userDefinedCollections := createCollectionsWithTestDocuments(t, configDB, userDefinedConfigCollectionNames)
+	collectionsToKeep := createCollectionsWithTestDocuments(t, configDB, configCollectionNamesToKeep)
+	defer clearDB(t, configDB)
+
+	withBSONMongodump(
+		t,
+		func(dir string) {
+
+			clearDB(t, configDB)
+
+			restore, err := getRestoreWithArgs(
+				DropOption,
+				dir,
+			)
+			require.NoError(err)
+			defer restore.Close()
+
+			result := restore.Restore()
+			require.NoError(result.Err, "can run mongorestore")
+			require.EqualValues(0, result.Failures, "mongorestore reports 0 failures")
+
+			for _, collection := range collectionsToKeep {
+				r := collection.FindOne(context.Background(), testDocument)
+				require.NoError(r.Err(), "expected document")
+			}
+
+			for _, collection := range userDefinedCollections {
+				r := collection.FindOne(context.Background(), testDocument)
+				require.Error(r.Err(), "expected no document")
+			}
+
+		},
+	)
+}
+
+func createCollectionsWithTestDocuments(t *testing.T, db *mongo.Database, collectionNames []string) []*mongo.Collection {
+	collections := []*mongo.Collection{}
+	for _, collectionName := range collectionNames {
+		collection := createCollectionWithTestDocument(t, db, collectionName)
+		collections = append(collections, collection)
+	}
+	return collections
+}
+
+func clearDB(t *testing.T, db *mongo.Database) {
+	require := require.New(t)
+	collectionNames, err := db.ListCollectionNames(context.Background(), bson.D{})
+	require.NoError(err, "can get collection names")
+	for _, collectionName := range collectionNames {
+		collection := db.Collection(collectionName)
+		_, _ = collection.DeleteMany(context.Background(), bson.M{})
+	}
 }
