@@ -3,8 +3,10 @@ package version
 import (
 	"fmt"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Version struct {
@@ -60,6 +62,8 @@ func Parse(desc string) (Version, error) {
 	}, nil
 }
 
+var tagRE = regexp.MustCompile(`^\d+\.\d+\.d+$`)
+
 func GetCurrent() (Version, error) {
 	commit, err := git("rev-parse", "HEAD")
 	if err != nil {
@@ -76,27 +80,9 @@ func GetCurrent() (Version, error) {
 		return Version{}, fmt.Errorf("failed to parse version from describe: %w", err)
 	}
 
-	v.Commit = commit
-	return v, nil
-}
-
-func GetFromRev(rev string) (Version, error) {
-	commit, err := git("rev-parse", rev)
-	if err != nil {
-		return Version{}, fmt.Errorf("git rev-parse %s failed: %w", rev, err)
+	if !tagRE.MatchString(desc) {
+		v.Commit = commit
 	}
-
-	desc, err := git("describe", commit)
-	if err != nil {
-		return Version{}, fmt.Errorf("git describe %s failed: %w", commit, err)
-	}
-
-	v, err := Parse(desc)
-	if err != nil {
-		return Version{}, fmt.Errorf("failed to parse version from describe: %w", err)
-	}
-
-	v.Commit = commit
 	return v, nil
 }
 
@@ -116,11 +102,31 @@ func (v Version) RPMRelease() string {
 	if v.Pre == "" {
 		return "1"
 	}
-	return strings.Split(v.Pre, "-")[0]
+	pre := v.Pre
+	if v.Commit != "" {
+		pre = time.Now().Format("20060102") + "." + v.Commit[:8]
+	}
+	return pre
 }
 
 func (v Version) IsStable() bool {
 	return v.Pre == ""
+}
+
+func (v Version) GreaterThan(other Version) bool {
+	if v.Major > other.Major {
+		return true
+	} else if v.Major < other.Major {
+		return false
+	}
+
+	if v.Minor > other.Minor {
+		return true
+	} else if v.Minor < other.Minor {
+		return false
+	}
+
+	return v.Patch > other.Patch
 }
 
 func git(args ...string) (string, error) {

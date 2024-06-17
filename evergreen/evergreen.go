@@ -110,6 +110,11 @@ func (c *Config) GitHubPRAliasesYAML() (string, error) {
 			tasks:   `^unit$`,
 		},
 		{
+			comment: "Run push and record this PR run in Papertrail.",
+			variant: `.*`,
+			tasks:   `^push$`,
+		},
+		{
 			comment: "Run tests with the race detector enabled.",
 			variant: `ubuntu-race`,
 			tasks:   `^.*$`,
@@ -119,19 +124,7 @@ func (c *Config) GitHubPRAliasesYAML() (string, error) {
 				" it's a relatively recent platform that supports a wide range of" +
 				" servers.",
 			variant: `rhel80`,
-			tasks:   `^(aws-auth|integration|native-cert-ssl|qa-dump-restore|qa-tests)-.*`,
-		},
-		{
-			comment: "Run srv tests on one variant. We pick RHEL 8.0 because" +
-				" it's a relatively recent platform that supports a wide range of" +
-				" servers.",
-			variant: `rhel80`,
-			tasks:   `^srv*`,
-		},
-		{
-			comment: "RHEL 8.0 doesn't run against server 3.4, so we do that with RHEL 7.0.",
-			variant: `rhel70`,
-			tasks:   `^(aws-auth|integration|native-cert-ssl|qa-dump-restore|qa-tests)-3.4$`,
+			tasks:   `^(aws-auth|integration|legacy|native-cert-ssl|qa-dump-restore|qa-tests)-.*`,
 		},
 	}
 

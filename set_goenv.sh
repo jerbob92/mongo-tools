@@ -11,11 +11,11 @@ set_goenv() {
     UNAME_S=$(PATH="/usr/bin:/bin" uname -s)
     case $UNAME_S in
         CYGWIN*)
-            PREF_GOROOT="c:/golang/go1.20"
-            PREF_PATH="/cygdrive/c/golang/go1.20/bin:/cygdrive/c/mingw-w64/x86_64-4.9.1-posix-seh-rt_v3-rev1/mingw64/bin:$PATH"
+            PREF_GOROOT="c:/golang/go1.21"
+            PREF_PATH="/cygdrive/c/golang/go1.21/bin:/cygdrive/c/mingw-w64/x86_64-4.9.1-posix-seh-rt_v3-rev1/mingw64/bin:$PATH"
         ;;
         *)
-            PREF_GOROOT="/opt/golang/go1.20"
+            PREF_GOROOT="/opt/golang/go1.21"
             PREF_PATH="$PREF_GOROOT/bin:$PATH"
         ;;
     esac
@@ -69,6 +69,8 @@ set_goenv() {
         echo "Current path '$(pwd)' doesn't resemble a GOPATH-style path. Aborting.";
         return 1
     fi
+
+    export PATH="$PATH:$GOPATH/bin"
 
     return
 }

@@ -327,7 +327,7 @@ func (a Arch) String() string {
 }
 
 var platformsByVariant map[string]Platform
-var defaultBuildTags = []string{"ssl", "sasl", "gssapi", "failpoints"}
+var defaultBuildTags = []string{"gssapi", "failpoints"}
 
 // Please keep this list sorted by Name and then Arch. This makes it easier to determine
 // whether a given platform exists in the list.
@@ -398,14 +398,6 @@ var platforms = []Platform{
 		ServerVariantName: "enterprise-debian12-64",
 	},
 	{
-		Name:      "debian81",
-		Arch:      ArchX86_64,
-		OS:        OSLinux,
-		Pkg:       PkgDeb,
-		Repos:     []Repo{RepoEnterprise, RepoOrg},
-		BuildTags: defaultBuildTags,
-	},
-	{
 		Name:      "debian92",
 		Arch:      ArchX86_64,
 		OS:        OSLinux,
@@ -427,6 +419,20 @@ var platforms = []Platform{
 		BuildTags:         defaultBuildTags,
 		ServerVariantName: "enterprise-macos",
 	},
+	// This is a special build that we upload to S3 but not to the release
+	// repos.
+	{
+		Name: "rhel62",
+		// This needs to match the name of the buildvariant in the Evergreen
+		// config.
+		VariantName:       "rhel62-no-kerberos",
+		Arch:              ArchX86_64,
+		OS:                OSLinux,
+		Pkg:               PkgRPM,
+		BuildTags:         []string{"failpoints"},
+		SkipForJSONFeed:   true,
+		ServerVariantName: "enterprise-rhel-62-64-bit",
+	},
 	{
 		Name:      "rhel62",
 		Arch:      ArchX86_64,
@@ -434,20 +440,6 @@ var platforms = []Platform{
 		Pkg:       PkgRPM,
 		Repos:     []Repo{RepoEnterprise, RepoOrg},
 		BuildTags: defaultBuildTags,
-	},
-	// This is a special build that we upload to S3 but not to the release
-	// repos.
-	{
-		Name: "rhel62",
-		// This needs to match the name of the buildvariant in the Evergreen
-		// config.
-		VariantName:       "rhel62-no-sasl-or-kerberos",
-		Arch:              ArchX86_64,
-		OS:                OSLinux,
-		Pkg:               PkgRPM,
-		BuildTags:         []string{"ssl", "failpoints"},
-		SkipForJSONFeed:   true,
-		ServerVariantName: "enterprise-rhel-62-64-bit",
 	},
 	{
 		Name:      "rhel70",
@@ -544,7 +536,7 @@ var platforms = []Platform{
 		OS:        OSLinux,
 		Pkg:       PkgDeb,
 		Repos:     []Repo{RepoEnterprise, RepoOrg},
-		BuildTags: []string{"failpoints", "ssl"},
+		BuildTags: []string{"failpoints"},
 	},
 	{
 		Name:      "ubuntu1604",
@@ -560,7 +552,7 @@ var platforms = []Platform{
 		OS:        OSLinux,
 		Pkg:       PkgDeb,
 		Repos:     []Repo{RepoEnterprise, RepoOrg},
-		BuildTags: []string{"failpoints", "ssl"},
+		BuildTags: []string{"failpoints"},
 	},
 	{
 		Name:      "ubuntu1804",
@@ -576,7 +568,7 @@ var platforms = []Platform{
 		OS:        OSLinux,
 		Pkg:       PkgDeb,
 		Repos:     []Repo{RepoEnterprise, RepoOrg},
-		BuildTags: []string{"failpoints", "ssl"},
+		BuildTags: []string{"failpoints"},
 	},
 	{
 		Name:      "ubuntu2004",
@@ -592,7 +584,7 @@ var platforms = []Platform{
 		OS:        OSLinux,
 		Pkg:       PkgDeb,
 		Repos:     []Repo{RepoEnterprise, RepoOrg},
-		BuildTags: []string{"failpoints", "ssl"},
+		BuildTags: []string{"failpoints"},
 	},
 	{
 		Name:      "ubuntu2204",

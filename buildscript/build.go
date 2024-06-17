@@ -31,7 +31,7 @@ var pkgNames = []string{
 }
 
 // minimumGoVersion must be prefixed with v to be parsed by golang.org/x/mod/semver
-const minimumGoVersion = "v1.20.12"
+const minimumGoVersion = "v1.21.10"
 
 func CheckMinimumGoVersion(ctx *task.Context) error {
 	goVersionStr, err := runCmd(ctx, "go", "version")
@@ -85,11 +85,6 @@ func TestKerberos(ctx *task.Context) error {
 // TestIntegration is an Executor that runs all integration tests for the provided packages.
 func TestIntegration(ctx *task.Context) error {
 	return runTests(ctx, selectedPkgs(ctx), testtype.IntegrationTestType)
-}
-
-// TestSRV is an Executor that runs all SRV tests for the provided packages.
-func TestSRV(ctx *task.Context) error {
-	return runTests(ctx, selectedPkgs(ctx), testtype.SRVConnectionStringTestType)
 }
 
 // TestAWSAuth is an Executor that runs all AWS auth tests for the provided packages.

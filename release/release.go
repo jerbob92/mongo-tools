@@ -19,6 +19,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -251,7 +252,9 @@ func getDebFileName() string {
 	check(err, "get version")
 
 	vStr := fmt.Sprintf("%d.%d.%d", v.Major, v.Minor, v.Patch)
-	if v.Pre != "" {
+	if v.Commit != "" {
+		vStr += "~" + v.Commit[:8]
+	} else if v.Pre != "" {
 		vStr += "~latest"
 	}
 
@@ -261,21 +264,12 @@ func getDebFileName() string {
 	)
 }
 
-func getRPMFileName() string {
-	p, err := platform.GetFromEnv()
-	check(err, "get platform")
-
-	v, err := version.GetCurrent()
-	check(err, "get version")
-
-	vStr := fmt.Sprintf("%d.%d.%d", v.Major, v.Minor, v.Patch)
-	if v.Pre != "" {
-		vStr += ".latest"
-	}
-
+func getRPMFileName(p platform.Platform, v version.Version) string {
 	return fmt.Sprintf(
-		"mongodb-database-tools-%s.%s.rpm",
-		vStr, p.RPMArch(),
+		"mongodb-database-tools-%s-%s.%s.rpm",
+		v.StringWithoutPre(),
+		v.RPMRelease(),
+		p.RPMArch(),
 	)
 }
 
@@ -374,20 +368,32 @@ func buildRPM() {
 	// we'll want to go back to the original directory, just in case.
 	defer cdBack()
 
+	pf, err := platform.GetFromEnv()
+	check(err, "get platform")
+	specFile := mdt + ".spec"
+
+	v, err := version.GetCurrent()
+	check(err, "get version")
+
+	rpmVersion := v.StringWithoutPre()
+	rpmRelease := v.RPMRelease()
+	rpmFilename := getRPMFileName(pf, v)
+
 	// The goal here is to set up  directory with the following structure:
+	//
 	// rpmbuild/
-	// |----- SOURCES/
-	// |         |----- mongodb-database-tools.tar.gz:
-	//                       |
-	//                      mongodb-database-tools/
-	//                               |------ usr/
-	//                               |-- bin/
-	//                               |    |--- bsondump
-	//                               |    |--- mongo*
-	//                               |-- share/
-	//                                      |---- doc/
-	//                                             |----- mongodb-database-tools/
-	//                                                              |--- staticFiles
+	// |-- SOURCES/
+	// |   |-- mongodb-database-tools.tar.gz:
+	//         |
+	//         mongodb-database-tools/
+	//         |-- usr/
+	//             |-- bin/
+	//             |   |-- bsondump
+	//             |   |--- mongo*
+	//             |-- share/
+	//                 |-- doc/
+	//                     |-- mongodb-database-tools/
+	//                         |-- staticFiles
 
 	// create tar file
 	log.Printf("tarring necessary files\n")
@@ -406,7 +412,7 @@ func buildRPM() {
 		tw := tar.NewWriter(gw)
 		defer tw.Close()
 
-		for _, name := range staticFiles {
+		for _, name := range getStaticFiles("..", rpmFilename) {
 			log.Printf("adding %s to tarball\n", name)
 			src := filepath.Join(staticFilesPath, name)
 			dst := filepath.Join(mdt, "usr", "share", "doc", mdt, name)
@@ -422,16 +428,6 @@ func buildRPM() {
 	}
 	createTar()
 
-	pf, err := platform.GetFromEnv()
-	check(err, "get platform")
-	specFile := mdt + ".spec"
-
-	v, err := version.GetCurrent()
-	check(err, "get version")
-
-	rpmVersion := v.StringWithoutPre()
-	rpmRelease := v.RPMRelease()
-
 	createSpecFile := func() {
 		log.Printf("create spec file\n")
 		f, err := os.Create(specFile)
@@ -444,14 +440,16 @@ func buildRPM() {
 		check(err, "reading spec file content")
 		content = strings.Replace(content, "@TOOLS_VERSION@", rpmVersion, -1)
 		content = strings.Replace(content, "@TOOLS_RELEASE@", rpmRelease, -1)
+		static := getStaticFiles("..", rpmFilename)
+		bomFilename := filepath.Base(static[len(static)-1])
+		content = strings.Replace(content, "@TOOLS_BOM_FILE@", bomFilename, -1)
 		content = strings.Replace(content, "@ARCHITECTURE@", pf.RPMArch(), -1)
 		_, err = f.WriteString(content)
 		check(err, "write content to spec file")
 	}
 	createSpecFile()
 
-	outputFile := mdt + "-" + rpmVersion + "-" + rpmRelease + "." + pf.RPMArch() + ".rpm"
-	outputPath := filepath.Join(home, "rpmbuild", "RPMS", outputFile)
+	outputPath := filepath.Join(home, "rpmbuild", "RPMS", rpmFilename)
 
 	// ensure that the _topdir macro used by rpmbuild references a writeable location
 	topdirDefine := "_topdir " + filepath.Join(home, "rpmbuild")
@@ -463,7 +461,7 @@ func buildRPM() {
 	// Copy to top level directory so we can upload it.
 	check(copyFile(
 		outputPath,
-		filepath.Join("..", getRPMFileName()),
+		filepath.Join("..", getRPMFileName(pf, v)),
 	), "linking output for s3 upload")
 }
 
@@ -473,6 +471,7 @@ func buildDeb() {
 
 	mdt := "mongodb-database-tools"
 	releaseName := getReleaseName()
+	debFilename := releaseName + ".deb"
 
 	// set up build working directory.
 	cdBack := useWorkingDir("deb_build")
@@ -481,19 +480,19 @@ func buildDeb() {
 
 	// The goal here is to set up  directory with the following structure:
 	// releaseName/
-	// |----- DEBIAN/
-	// |        |----- control
-	// |        |----- postinst
-	// |        |----- prerm
-	// |        |----- md5sums
-	// |------ usr/
-	//          |-- bin/
-	//          |    |--- bsondump
-	//          |    |--- mongo*
-	//          |-- share/
-	//                 |---- doc/
-	//                        |----- mongodb-database-tools/
-	//                                         |--- staticFiles
+	// |-- DEBIAN/
+	// |   |-- control
+	// |   |-- postinst
+	// |   |-- prerm
+	// |   |-- md5sums
+	// |--- usr/
+	//      |-- bin/
+	//      |    |-- bsondump
+	//      |    |-- mongo*
+	//      |-- share/
+	//           |-- doc/
+	//               |-- mongodb-database-tools/
+	//                   |-- staticFiles
 
 	log.Printf("create deb directory tree\n")
 
@@ -510,7 +509,7 @@ func buildDeb() {
 	md5sums := make(map[string]string)
 	// We use the order just to make sure the md5sums are always in the same order.
 	// This probably doesn't matter, but it looks nicer for anyone inspecting the md5sums file.
-	md5sumsOrder := make([]string, 0, len(binaries)+len(staticFiles))
+	md5sumsOrder := make([]string, 0, len(binaries)+len(getStaticFiles("..", debFilename)))
 	logCopy := func(src, dst string) {
 		log.Printf("copying %s to %s\n", src, dst)
 	}
@@ -527,7 +526,7 @@ func buildDeb() {
 			md5sumsOrder = append(md5sumsOrder, dst)
 		}
 		// Add static files.
-		for _, file := range staticFiles {
+		for _, file := range getStaticFiles("..", debFilename) {
 			src := filepath.Join("..", file)
 			dst := filepath.Join(docDir, file)
 			logCopy(src, dst)
@@ -608,24 +607,23 @@ func buildDeb() {
 		}
 	}
 
-	output := releaseName + ".deb"
 	var out string
 	// Create the .deb file. On Ubuntu 22.04+, dpkg uses zstd compression by default.
 	// We want to create the deb using xz compression, since barque will not be able to read
 	// zstd compressed debs. dpkg-deb is the underlying utility for building debs, and we can
 	// pass a compression option (-Z) to it.
 	if strings.Contains(pf.Name, "ubuntu") && pf.Name >= "ubuntu2204" {
-		log.Printf("running: dpkg-deb -D -b -Z xz %s %s", releaseName, output)
-		out, err = run("dpkg-deb", "-D", "-b", "-Z", "xz", releaseName, output)
+		log.Printf("running: dpkg-deb -D -b -Z xz %s %s", releaseName, debFilename)
+		out, err = run("dpkg-deb", "-D", "-b", "-Z", "xz", releaseName, debFilename)
 	} else {
-		log.Printf("running: dpkg -D1 -b %s %s", releaseName, output)
-		out, err = run("dpkg", "-D1", "-b", releaseName, output)
+		log.Printf("running: dpkg -D1 -b %s %s", releaseName, debFilename)
+		out, err = run("dpkg", "-D1", "-b", releaseName, debFilename)
 	}
 
 	check(err, "run dpkg\n"+out)
 	// Copy to top level directory so we can upload it.
 	check(os.Link(
-		output,
+		debFilename,
 		filepath.Join("..", getDebFileName()),
 	), "linking output for s3 upload")
 }
@@ -637,6 +635,8 @@ func buildMSI() {
 		return
 	}
 
+	msiFilename := getReleaseName() + ".msi"
+
 	// The msi msiUpgradeCode must be updated when the major version changes.
 	msiUpgradeCode := "effc2f80-8f82-413f-a3ba-4a96f3d2883a"
 
@@ -644,20 +644,18 @@ func buildMSI() {
 	msiStaticFilesPath := ".."
 	// Note that the file functions do not allow for drive letters on Windows, absolute paths
 	// must be specified with a leading os.PathSeparator.
-	saslDLLsPath := string(os.PathSeparator) + filepath.Join("sasl", "bin")
 	msiFilesPath := filepath.Join("..", "installer", "msi")
 
 	// These are the meta-text files that are part of mongo-tools, relative
 	// to the location of this go file. We have to use an rtf verison of the
-	// license, so we do not include the static files.
+	// license, so we do not include it in the static files.
 	var msiStaticFiles = []string{
 		"README.md",
 		"THIRD-PARTY-NOTICES",
 	}
-
-	var saslDLLs = []string{
-		"libsasl.dll",
-	}
+	static := getStaticFiles(".", msiFilename)
+	augmentedSBOMFilename := static[len(static)-1]
+	msiStaticFiles = append(msiStaticFiles, augmentedSBOMFilename)
 
 	// location of the necessary data files to build the msi.
 	var msiFiles = []string{
@@ -681,16 +679,6 @@ func buildMSI() {
 	cdBack := useWorkingDir(msiBuildDir)
 	// we'll want to go back to the original directory, just in case.
 	defer cdBack()
-
-	// Copy sasldlls. They need to be in this directory for Wix. Linking will
-	// not work as the dlls are on a different file system.
-	for _, name := range saslDLLs {
-		err := copyFile(
-			filepath.Join(saslDLLsPath, name),
-			name,
-		)
-		check(err, "copy sasl dlls into "+msiBuildDir)
-	}
 
 	// make links to all the staticFiles. They need to be in this
 	// directory for Wix.
@@ -751,6 +739,7 @@ func buildMSI() {
 		`-dVersion=`+wixVersion,
 		`-dVersionLabel=`+versionLabel,
 		`-dProjectName=`+projectName,
+		`-dAugmentedSBOMFilename=`+augmentedSBOMFilename,
 		`-dSourceDir=`+sourceDir,
 		`-dResourceDir=`+resourceDir,
 		`-dSslDir=`+binDir,
@@ -772,12 +761,11 @@ func buildMSI() {
 
 	check(err, "run candle.exe\n"+out)
 
-	output := "release.msi"
 	light := filepath.Join(wixPath, "light.exe")
 	out, err = run(light,
 		"-wx",
 		`-cultures:en-us`,
-		`-out`, output,
+		`-out`, msiFilename,
 		`-ext`, wixUIExtPath,
 		filepath.Join(objDir, `Product.wixobj`),
 		filepath.Join(objDir, `FeatureFragment.wixobj`),
@@ -789,8 +777,8 @@ func buildMSI() {
 
 	// Copy to top level directory so we can upload it.
 	check(os.Link(
-		output,
-		filepath.Join("..", output),
+		msiFilename,
+		filepath.Join("..", msiFilename),
 	), "linking output for s3 upload")
 }
 
@@ -876,7 +864,9 @@ func addToTarball(tw *tar.Writer, dst, src string) {
 func buildTarball() {
 	log.Printf("building tarball archive\n")
 
-	archiveFile, err := os.Create("release.tgz")
+	releaseName := getReleaseName()
+	tarballFilename := releaseName + ".tgz"
+	archiveFile, err := os.Create(tarballFilename)
 	check(err, "create archive file")
 	defer archiveFile.Close()
 
@@ -886,9 +876,7 @@ func buildTarball() {
 	tw := tar.NewWriter(gw)
 	defer tw.Close()
 
-	releaseName := getReleaseName()
-
-	for _, name := range staticFiles {
+	for _, name := range getStaticFiles(".", tarballFilename) {
 		log.Printf("adding %s to tarball\n", name)
 		src := name
 		dst := filepath.Join(releaseName, name)
@@ -926,16 +914,16 @@ func addToZip(zw *zip.Writer, dst, src string) {
 func buildZip() {
 	log.Printf("building zip archive\n")
 
-	archiveFile, err := os.Create("release.zip")
+	releaseName := getReleaseName()
+	zipFilename := releaseName + ".zip"
+	archiveFile, err := os.Create(zipFilename)
 	check(err, "create archive file")
 	defer archiveFile.Close()
 
 	zw := zip.NewWriter(archiveFile)
 	defer zw.Close()
 
-	releaseName := getReleaseName()
-
-	for _, name := range staticFiles {
+	for _, name := range getStaticFiles(".", zipFilename) {
 		log.Printf("adding %s to zip\n", name)
 		src := name
 		dst := strings.Join([]string{releaseName, name}, "/")
@@ -1133,9 +1121,17 @@ func uploadRelease(v version.Version) {
 		check(err, "getting artifacts list")
 
 		if len(artifacts) != len(pf.ArtifactExtensions()) {
+			var artifactNames []string
+			for _, a := range artifacts {
+				artifactNames = append(artifactNames, a.Name)
+			}
 			log.Fatalf(
-				"expected %d artifacts but found %d for %s",
-				len(pf.ArtifactExtensions()), len(artifacts), task.Variant,
+				"expected %d artifacts but found %d for %s; artifact names are [%s]; expected extensions to include [%s]",
+				len(pf.ArtifactExtensions()),
+				len(artifacts),
+				task.Variant,
+				strings.Join(artifactNames, " "),
+				strings.Join(pf.ArtifactExtensions(), " "),
 			)
 		}
 
@@ -1145,14 +1141,10 @@ func uploadRelease(v version.Version) {
 				ext = a.URL[len(a.URL)-8:]
 			}
 
+			stableFile := getReleaseName() + ext
 			unstableFile := fmt.Sprintf(
 				"mongodb-database-tools-%s-%s-unstable%s",
 				pf.Name, pf.Arch, ext,
-			)
-
-			stableFile := fmt.Sprintf(
-				"mongodb-database-tools-%s-%s-%s%s",
-				pf.Name, pf.Arch, v, ext,
 			)
 
 			latestStableFile := fmt.Sprintf(
@@ -1162,14 +1154,14 @@ func uploadRelease(v version.Version) {
 
 			log.Printf("  downloading %s\n", a.URL)
 			downloadFile(a.URL, unstableFile)
-			if canPerformStableRelease(v) {
-				copyFile(unstableFile, stableFile)
-				copyFile(unstableFile, latestStableFile)
-			}
 
 			log.Printf("    uploading to https://s3.amazonaws.com/downloads.mongodb.org/tools/db/%s\n", unstableFile)
 			awsClient.UploadFile("downloads.mongodb.org", "/tools/db", unstableFile)
+
 			if canPerformStableRelease(v) {
+				copyFile(unstableFile, stableFile)
+				copyFile(unstableFile, latestStableFile)
+
 				log.Printf("    uploading to https://s3.amazonaws.com/downloads.mongodb.org/tools/db/%s\n", stableFile)
 				awsClient.UploadFile("downloads.mongodb.org", "/tools/db", stableFile)
 				log.Printf("    uploading to https://s3.amazonaws.com/downloads.mongodb.org/tools/db/%s\n", latestStableFile)
@@ -1227,7 +1219,7 @@ func linuxRelease(v version.Version) {
 	check(err, "get platform")
 
 	if pf.OS != platform.OSLinux {
-		log.Printf("cannot release linux packages for non-linux platform")
+		log.Printf("cannot release linux packages for non-linux platform; platform is %s", pf.Name)
 		return
 	}
 
@@ -1351,7 +1343,7 @@ func linuxRelease(v version.Version) {
 // version is a stable version and the current evg task was triggered
 // by a git tag.
 func canPerformStableRelease(v version.Version) bool {
-	return v.IsStable() && env.EvgIsTagTriggered()
+	return v.IsStable() && env.EvgIsTagTriggered() && !env.IsFakeTag()
 }
 
 func downloadMongodAndShell(v string) {
@@ -1558,4 +1550,75 @@ func downloadArtifacts(v string, artifactNames []string) {
 	if numArtifactsDownloaded != len(artifactNames) {
 		log.Fatalf("expect to download %d artifacts %s, only downloaded %d", len(artifactNames), artifactNames, numArtifactsDownloaded)
 	}
+}
+
+func getStaticFiles(repoRoot, releaseFilename string) []string {
+	sbomFile := maybeCopyAugmentedSBOMToRoot(repoRoot, releaseFilename)
+	return append(staticFiles, sbomFile)
+}
+
+// This is used to trim the repo root off the SBOM file name.
+var prefixRE = regexp.MustCompile(`\.+[/\\]`)
+
+func maybeCopyAugmentedSBOMToRoot(repoRoot, releaseFilename string) string {
+	// This is the naming convention recommended by the OSSF per
+	// https://github.com/ossf/sbom-everywhere/blob/main/reference/sbom_naming.md.
+	targetFile := filepath.Join(repoRoot, releaseFilename+".cdx.json")
+	if fileExists(targetFile) {
+		return prefixRE.ReplaceAllString(targetFile, "")
+	}
+
+	var (
+		sourceFile string
+		tag        = os.Getenv("EVG_TRIGGERED_BY_TAG")
+	)
+	if tag != "" {
+		sourceFile = filepath.Join(repoRoot, "ssdlc", tag+".bom.json")
+	} else {
+		sourceFile = mostRecentAugmentedSBOM(repoRoot)
+	}
+	copyFile(sourceFile, targetFile)
+
+	return prefixRE.ReplaceAllString(targetFile, "")
+}
+
+func fileExists(file string) bool {
+	_, err := os.Stat(file)
+	if os.IsNotExist(err) {
+		return false
+	}
+	check(err, "stat of %q", file)
+	// If there was no error then the file must exist.
+	return true
+}
+
+var sbomFileVersionRE = regexp.MustCompile(`(\d+\.\d+\.\d+)\.bom\.json`)
+
+func mostRecentAugmentedSBOM(repoRoot string) string {
+	glob := filepath.Join(repoRoot, "ssdlc", "*.bom.json")
+	paths, err := filepath.Glob(glob)
+	check(err, "glob of %q", glob)
+
+	var mostRecentFile string
+	mostRecentVersion, err := version.Parse("0.0.0")
+	check(err, "parsing version 0.0.0")
+	for _, path := range paths {
+		matches := sbomFileVersionRE.FindStringSubmatch(path)
+		if len(matches) < 2 {
+			log.Fatalf("could not extract version from filename %q", path)
+		}
+		version, err := version.Parse(matches[1])
+		check(err, "parsing version %s", version)
+
+		if version.GreaterThan(mostRecentVersion) {
+			mostRecentFile = path
+			mostRecentVersion = version
+		}
+	}
+
+	if mostRecentFile == "" {
+		log.Fatal("could not find any Augmented SBOM files!")
+	}
+
+	return mostRecentFile
 }
